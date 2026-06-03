@@ -21,7 +21,7 @@ Het keyboard werkt ook als USB keyboard.
 
 [//]: # (![Communicator 2026](media/finished.png))
 
-[//]: # (![Communicator 2026 blockdiagram](media/blockdiagram.png))
+![Communicator 2026 blockdiagram](media/blockdiagram.png)
 
 
 # Communicator 2026 (EN)
