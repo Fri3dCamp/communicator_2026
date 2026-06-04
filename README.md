@@ -1,4 +1,4 @@
-# Communicator 2024 (EN)
+# Communicator 2026
 In deze Git repository kan je de ontwerpbestanden en productiedata vinden van de [Fri3d Camp](https://fri3d.be/) 2026 communcator add-on. Revisie 01 is de versie die je in de zakjes kan terugvinden.
 
 De PCB bevat volgende elementen:
