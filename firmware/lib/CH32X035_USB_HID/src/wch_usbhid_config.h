@@ -5,10 +5,10 @@
 #define CH32X035_ESIG_UNIID3    0x1FFFF7F0
 
 // Strings
-#define WCH_USBHID_MANUF_STR            "WCH"
-#define WCH_USBHID_PROD_STR             "CH32X035-Keyboard"
+#define WCH_USBHID_MANUF_STR            "Fri3d.be"
+#define WCH_USBHID_PROD_STR             "comm2026"
 #define WCH_USBHID_INTERF_STR           "USBKeyboard"
-#define WCH_USBHID_SERIAL_PREFIX        "KB"
+#define WCH_USBHID_SERIAL_PREFIX        "FC"
 
 #define STR_LEN(s) (sizeof(s) - 1)
 
