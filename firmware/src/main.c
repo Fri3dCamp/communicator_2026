@@ -1,4 +1,5 @@
 #include <ch32x035.h> /* both X033 and X035 */
+#include <stddef.h>   /* offsetof() */
 #include <stdlib.h>   /* atoi() */
 #include <string.h>   /* memset() */
 
@@ -138,6 +139,7 @@ typedef struct
     uint8_t matrix_state[N_COLS];              // current matrix state
     uint8_t slave_offset;                 // register offset captured after the most recent ADDR+W
     uint8_t slave_position;              // current read/write cursor, reset to offset on every ADDR
+    uint8_t unused;                            // padding: the backlight value must be halfword aligned
     union
     {
         addon_data_t data;
@@ -145,8 +147,19 @@ typedef struct
     };
 } addon_state_t;
 
-/* Global Variables */
-static addon_state_t state;
+/* The DMA copies the backlight value to the timer as a halfword: keep it aligned */
+_Static_assert(offsetof(addon_state_t, data.backlight) % 2 == 0, "backlight is not halfword aligned!");
+
+/* Global Variables. Aligned: the DMA reads the backlight value as a halfword. */
+static addon_state_t state __attribute__((aligned(4)));
+
+/*
+ * Copy of the read-only registers (version, key report), taken at the start of
+ * every I2C read. The main loop updates the key report between the bytes of a
+ * read: without the copy, a read could return the modifiers of one report and
+ * the keys of the next.
+ */
+static uint8_t i2c_snapshot[RESULT_CONFIG_OFFSET];
 
 /* initialize timer 3 to periodically generate an interrupt */
 static void TIM3_Init(uint16_t arr, uint16_t psc)
@@ -608,8 +621,11 @@ static void determine_hid_report(uint8_t keycode, uint8_t is_modifier, uint8_t p
 /* toggle the backlight on or off */
 static void toggle_backlight(void)
 {
-    state.data.backlight -= state.data.backlight % 20;
-    state.data.backlight = (state.data.backlight + 20) % 120;
+    uint16_t backlight = state.data.backlight;
+
+    /* one store: the DMA and I2C must not see the value in between */
+    backlight -= backlight % 20;
+    state.data.backlight = (backlight + 20) % 120;
 }
 
 static void handle_fn(key_report_t *in, key_report_t *out)
@@ -761,7 +777,17 @@ static void i2c_slave_process(void)
 
     if (flag1 & I2C_STAR1_TXE)
     {
-        if (state.slave_position < RESULT_BUFFER_SIZE)
+        /* first byte of a read: take a consistent copy of the read-only registers */
+        if (state.slave_position == state.slave_offset)
+        {
+            memcpy(i2c_snapshot, state.raw_data, RESULT_CONFIG_OFFSET);
+        }
+
+        if (state.slave_position < RESULT_CONFIG_OFFSET)
+        {
+            I2C_SendData(I2C1, i2c_snapshot[state.slave_position++]);
+        }
+        else if (state.slave_position < RESULT_BUFFER_SIZE)
         {
             I2C_SendData(I2C1, state.raw_data[state.slave_position++]);
         }
@@ -821,6 +847,7 @@ int main(void)
 {
     uint8_t previous_matrix_state[N_COLS];
     key_report_t key_report;
+    key_report_t report;
     uint8_t previous_c = 200;
 
     memset(previous_matrix_state, 0, N_COLS);
@@ -916,7 +943,12 @@ int main(void)
                 memcpy(previous_matrix_state, state.matrix_state, N_COLS);
 
                 /* handle special FN triggers */
-                handle_fn(&key_report, &state.data.key_report);
+                handle_fn(&key_report, &report);
+
+                /* publish the report at once: the I2C interrupt must not see half of it */
+                NVIC_DisableIRQ(I2C1_EV_IRQn);
+                state.data.key_report = report;
+                NVIC_EnableIRQ(I2C1_EV_IRQn);
 
                 /*
                  * Send the key report over the UART: a badge that reads the
