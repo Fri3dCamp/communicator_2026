@@ -124,17 +124,23 @@ typedef struct __attribute__((packed))
 
 _Static_assert(sizeof(addon_data_t) == RESULT_BUFFER_SIZE, "raw data and struct size are not aligned!");
 
+/*
+ * Every flag has its own byte: writing a byte is a single store, while writing
+ * a bitfield is a read-modify-write of the whole byte that can overwrite a flag
+ * set by an interrupt in between (e.g. TIM3 setting flag_matrix_scan_done while
+ * the main loop clears flag_config_changed). They are volatile because the main
+ * loop polls flags that are set by interrupt handlers.
+ */
 typedef struct
 {
-    uint8_t flag_matrix_scan_done : 1;    // flag to indicate that the button matrix state has changed
-    uint8_t flag_int_should_clear : 1;    // flag to indicate that the interrupt should be cleared
-    uint8_t flag_button_scan_halfway : 1; // flag to indicate that the matrix scan is halfway
-    uint8_t flag_caps_lock : 1;           // reserved for future use
-    uint8_t flag_config_changed : 1;      // flag to indicate that the configuration has changed through I2C
-    uint8_t flag_slave_first_write : 1;   // set on every ADDR phase; the next RXNE byte is the register offset
-    uint8_t flag_uart_enabled : 1;
-    uint8_t reserved : 1;                 // reserved for future use
-    uint8_t matrix_state[N_COLS];         // current matrix state
+    volatile uint8_t flag_matrix_scan_done;    // flag to indicate that the button matrix state has changed
+    volatile uint8_t flag_int_should_clear;    // flag to indicate that the interrupt should be cleared
+    volatile uint8_t flag_button_scan_halfway; // flag to indicate that the matrix scan is halfway
+    volatile uint8_t flag_caps_lock;           // caps lock is on (FN + right shift)
+    volatile uint8_t flag_config_changed;      // flag to indicate that the configuration has changed through I2C
+    volatile uint8_t flag_slave_first_write;   // set on every ADDR phase; the next RXNE byte is the register offset
+    volatile uint8_t flag_uart_enabled;        // the UART output is configured
+    uint8_t matrix_state[N_COLS];              // current matrix state
     uint8_t slave_offset;                 // register offset captured after the most recent ADDR+W
     uint8_t slave_position;              // current read/write cursor, reset to offset on every ADDR
     union
