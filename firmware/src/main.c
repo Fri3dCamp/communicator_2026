@@ -70,6 +70,16 @@
 #define BACKLIGHT_TIM_CVR         TIM1->CH4CVR            // TIM1 Channel 4 compare register
 #define BACKLIGHT_TIM_DMA_CHANNEL DMA1_Channel5           // DMA channel for TIM1_UP
 
+/*
+ * Speaker amplifier (MAX98357A) shutdown, from rev 01 on: PC0 drives SD_MODE,
+ * which a 1 MOhm pull-up to VSYS holds at the (left + right) / 2 level.
+ * Released (floating input) keeps that level and the amplifier on, low (the
+ * X035 has no open-drain output) shuts it down. Driving it high would select
+ * the left channel only.
+ */
+#define AMP_SD_PORT GPIOC
+#define AMP_SD_PIN  GPIO_Pin_0
+
 /* UART */
 #define UART_PORT   GPIOB
 #define UART_TX_PIN GPIO_Pin_10 // PB10: UART TX
@@ -115,9 +125,10 @@ typedef struct __attribute__((packed))
 {
     uint8_t version[3];      // version number
     key_report_t key_report; // reference to the button state byte in the result buffer
-    uint8_t reboot : 1;      // write 1 to reboot into the bootloader
-    uint8_t remap : 1;       // write 1 to remap the SWD to the I2C pins
-    uint8_t reserved : 6;    // reserved
+    uint8_t reboot : 1;       // write 1 to reboot into the bootloader
+    uint8_t remap : 1;        // write 1 to remap the SWD to the I2C pins
+    uint8_t amp_shutdown : 1; // write 1 to shut the speaker amplifier down (rev 01 and later)
+    uint8_t reserved : 5;     // reserved
     uint16_t backlight;      // backlight PWM value
 } addon_data_t;
 
@@ -715,6 +726,24 @@ static void USART_Output_Init(uint32_t baudrate)
     USART_Cmd(UART, ENABLE);
 }
 
+/* shut the speaker amplifier down (SD_MODE low) or release SD_MODE (amplifier on) */
+static void Amp_Shutdown(uint8_t shutdown)
+{
+    GPIO_InitTypeDef GPIO_InitStructure = {0};
+
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOC, ENABLE);
+    /*
+     * GPIO_Init() sets the mode only: an output drives the level in OUTDR,
+     * which must be low (its reset value, but do not depend on that).
+     */
+    GPIO_WriteBit(AMP_SD_PORT, AMP_SD_PIN, Bit_RESET);
+
+    GPIO_InitStructure.GPIO_Pin = AMP_SD_PIN;
+    GPIO_InitStructure.GPIO_Mode = shutdown ? GPIO_Mode_Out_PP : GPIO_Mode_IN_FLOATING;
+    GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
+    GPIO_Init(AMP_SD_PORT, &GPIO_InitStructure);
+}
+
 static int i2c_pos_is_writable(uint8_t pos)
 {
     if (pos >= RESULT_CONFIG_OFFSET && pos < RESULT_CONFIG_OFFSET + 3) return 1;
@@ -892,6 +921,9 @@ int main(void)
     TIM_Cmd(BACKLIGHT_TIM, ENABLE);
     TIM_CtrlPWMOutputs(BACKLIGHT_TIM, ENABLE);
 
+    /* the speaker amplifier stays on until the badge shuts it down */
+    Amp_Shutdown(0);
+
     /* Initialize GPIO for keyboard scan */
     KB_Scan_Init();
     // KB_Sleep_Wakeup_Cfg();
@@ -992,8 +1024,8 @@ int main(void)
             }
         }
 
-        /* I2C master wrote a new value to the outputs register: apply it now.
-         * Also handles the reboot-to-bootloader command if that bit is set.
+        /* I2C master wrote a new value to the configuration register: apply it now
+         * (reboot to bootloader, remap, amplifier shutdown, UART output).
          */
         if (state.flag_config_changed)
         {
@@ -1018,6 +1050,7 @@ int main(void)
                 /* Re-enable DIO (SWD) interface on these pins */
                 GPIO_PinRemapConfig(GPIO_Remap_SWJ_Disable, DISABLE);
             }
+            Amp_Shutdown(state.data.amp_shutdown);
         }
     }
 }

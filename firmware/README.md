@@ -29,7 +29,7 @@ On the 2026 communicator, UART RX is also connected to the expansion connector. 
 
 ### I2C
 
-The Fri3d badge [2024](https://github.com/Fri3dCamp/badge_2024) and [2026](https://github.com/Fri3dCamp/badge_2026) can also communicate with the 2026 communicator add-on through I2C (address ```0x40```). The following registers can be used to interface/control with the add-on:
+The Fri3d badge [2024](https://github.com/Fri3dCamp/badge_2024) and [2026](https://github.com/Fri3dCamp/badge_2026) can also communicate with the 2026 communicator add-on through I2C (address ```0x39```). The following registers can be used to interface/control with the add-on:
 
 | Register | Name | Access | Bytes | description |
 |-|-|-|-|-|
@@ -42,7 +42,8 @@ The configuration is a 1-byte value with the following encoding:
 
 | Bit | Name | Default | Description |
 |-|-|-|-|
-| \[7:2\] | reserved | 0 | |
+| \[7:3\] | reserved | 0 | |
+| 2 | amplifier shutdown | 0 | Write 1 to shut the speaker amplifier down (its SD_MODE pin low), 0 to turn it on again. Revision 01 and later; on revision 00 the pin is not connected |
 | 1 | remap | 0 | Write 1 to disable I2C and give its pins back to SWD, so the add-on can be reflashed |
 | 0 | reboot | 0 | Write 1 to reboot into the bootloader |
 
