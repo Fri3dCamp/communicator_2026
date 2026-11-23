@@ -114,11 +114,9 @@ typedef struct __attribute__((packed))
 {
     uint8_t version[3];      // version number
     key_report_t key_report; // reference to the button state byte in the result buffer
-    uint8_t enable_int : 1;         // configuration flag to enable interrupt output instead of UART output (TODO)
-    uint8_t reboot : 1;             // configuration flag to trigger a reboot to bootloader
-    uint8_t remap : 1;              // write 1 to remap the SWD to the I2C pins
-    uint8_t enable_uart_output : 1; // configuration flag to enable sending the HID report over UART; defaults to 1. When 0, UART is disabled and its pins are tri-stated
-    uint8_t reserved : 4;           // reserved
+    uint8_t reboot : 1;      // write 1 to reboot into the bootloader
+    uint8_t remap : 1;       // write 1 to remap the SWD to the I2C pins
+    uint8_t reserved : 6;    // reserved
     uint16_t backlight;      // backlight PWM value
 } addon_data_t;
 
@@ -134,12 +132,9 @@ _Static_assert(sizeof(addon_data_t) == RESULT_BUFFER_SIZE, "raw data and struct 
 typedef struct
 {
     volatile uint8_t flag_matrix_scan_done;    // flag to indicate that the button matrix state has changed
-    volatile uint8_t flag_int_should_clear;    // flag to indicate that the interrupt should be cleared
-    volatile uint8_t flag_button_scan_halfway; // flag to indicate that the matrix scan is halfway
     volatile uint8_t flag_caps_lock;           // caps lock is on (FN + right shift)
     volatile uint8_t flag_config_changed;      // flag to indicate that the configuration has changed through I2C
     volatile uint8_t flag_slave_first_write;   // set on every ADDR phase; the next RXNE byte is the register offset
-    volatile uint8_t flag_uart_enabled;        // the UART output is configured
     uint8_t matrix_state[N_COLS];              // current matrix state
     uint8_t slave_offset;                 // register offset captured after the most recent ADDR+W
     uint8_t slave_position;              // current read/write cursor, reset to offset on every ADDR
@@ -529,7 +524,6 @@ static void KB_Scan(void)
     {
         /* Save the first scan result */
         scan = io_to_scan_result(GPIO_ReadInputData(GPIOB));
-        state.flag_int_should_clear = 1;
     }
 }
 
@@ -703,21 +697,6 @@ static void USART_Output_Init(uint32_t baudrate)
 
     USART_Init(UART, &USART_InitStructure);
     USART_Cmd(UART, ENABLE);
-    state.flag_uart_enabled = 1;
-}
-
-/* disable UART1 and tri-state its pins so they do not interfere with signaling */
-static void USART_Output_DeInit(void)
-{
-    GPIO_InitTypeDef GPIO_InitStructure = {0};
-
-    state.flag_uart_enabled = 0;
-    USART_Cmd(UART, DISABLE);
-
-    GPIO_InitStructure.GPIO_Pin = UART_TX_PIN | UART_RX_PIN;
-    GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
-    GPIO_InitStructure.GPIO_Mode = GPIO_Mode_IN_FLOATING;
-    GPIO_Init(UART_PORT, &GPIO_InitStructure);
 }
 
 static int i2c_pos_is_writable(uint8_t pos)
@@ -867,6 +846,9 @@ int main(void)
     SystemCoreClockUpdate();
     Delay_Init();
 
+    /* UART1 is always on: the key reports in release builds, the debug output in debug builds */
+    USART_Output_Init(UART_BAUDRATE);
+
     /* makes sure that we can still flash using SWD */
     Delay_Ms(1000);
 
@@ -898,19 +880,9 @@ int main(void)
     /* set the keyboard backlight off */
     state.data.backlight = 0;
 
-    /* UART output is enabled by default; can be disabled through I2C configuration */
-    state.data.enable_uart_output = 1;
-    state.flag_uart_enabled = 0;
-    state.flag_config_changed = 1;
 
     while (1)
     {
-        if (state.flag_button_scan_halfway && state.data.enable_int)
-        {
-            state.flag_button_scan_halfway = 0;
-            // TODO: set interrupt pin low
-        }
-
         if (state.flag_matrix_scan_done)
         {
             state.flag_matrix_scan_done = 0;
@@ -946,30 +918,26 @@ int main(void)
                 /* handle special FN triggers */
                 handle_fn(&key_report, &state.data.key_report);
 
-                /* the key report is ready to be fetched through I2C, so let's set the interrupt */
-                if (state.data.enable_int)
-                {
-                    // TODO: set the UART TX to high
-                    PRINT("TODO: set the output pin\r\n");
-                }
-                else if (state.flag_uart_enabled)
-                {
+                /*
+                 * Send the key report over the UART: a badge that reads the
+                 * keyboard over I2C can use it as the trigger for its reads.
+                 * Debug builds use the UART for their debug output instead.
+                 */
 #if (DEBUG)
-                    PRINT("Reporting HID through UART:\r\n");
-                    for (int i = 0; i < sizeof(key_report_t); i++)
-                    {
-                        PRINT("0x%02x ", state.raw_data[RESULT_KB_OFFSET + i]);
-                    }
-                    PRINT("\r\n");
-#else
-                    for (int i = 0; i < sizeof(key_report_t); i++)
-                    {
-                        while (USART_GetFlagStatus(UART, USART_FLAG_TC) == RESET)
-                            ;
-                        USART_SendData(UART, state.raw_data[RESULT_KB_OFFSET + i]);
-                    }
-#endif
+                PRINT("Reporting HID through UART:\r\n");
+                for (int i = 0; i < sizeof(key_report_t); i++)
+                {
+                    PRINT("0x%02x ", state.raw_data[RESULT_KB_OFFSET + i]);
                 }
+                PRINT("\r\n");
+#else
+                for (int i = 0; i < sizeof(key_report_t); i++)
+                {
+                    while (USART_GetFlagStatus(UART, USART_FLAG_TC) == RESET)
+                        ;
+                    USART_SendData(UART, state.raw_data[RESULT_KB_OFFSET + i]);
+                }
+#endif
 
                 USB_write(&state.raw_data[RESULT_KB_OFFSET], sizeof(key_report_t));
             }
@@ -1017,14 +985,6 @@ int main(void)
 
                 /* Re-enable DIO (SWD) interface on these pins */
                 GPIO_PinRemapConfig(GPIO_Remap_SWJ_Disable, DISABLE);
-            }
-            if (state.data.enable_uart_output)
-            {
-                USART_Output_Init(UART_BAUDRATE);
-            }
-            else
-            {
-                USART_Output_DeInit();
             }
         }
     }
