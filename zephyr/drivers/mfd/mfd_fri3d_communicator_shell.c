@@ -51,12 +51,12 @@ static int cmd_communicator_status(const struct shell *sh, size_t argc, char **a
 
 #ifdef CONFIG_MFD_FRI3D_COMMUNICATOR_UPDATE
 	struct mfd_fri3d_communicator_update_info info;
+	uint8_t bundled[3];
 
 	mfd_fri3d_communicator_get_update_info(&info);
-	if (info.bundled_len > 0) {
-		shell_print(sh, "bundled v%u.%u.%u (%zu bytes)%s", info.bundled_version[0],
-			    info.bundled_version[1], info.bundled_version[2], info.bundled_len,
-			    info.updated_at_boot ? ", installed at boot" : "");
+	if (mfd_fri3d_communicator_get_bundled_version(bundled) == 0) {
+		shell_print(sh, "bundled v%u.%u.%u (%zu bytes)", bundled[0], bundled[1], bundled[2],
+			    info.bundled_len);
 	}
 	shell_print(sh, "updates since boot: %u", info.updates);
 #endif

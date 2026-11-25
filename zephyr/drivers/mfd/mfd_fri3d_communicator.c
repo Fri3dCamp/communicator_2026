@@ -196,9 +196,6 @@ static int mfd_fri3d_communicator_init(const struct device *dev)
 	/* the devicetree says the add-on is there: wait for its firmware to answer */
 	ret = mfd_fri3d_communicator_wait(dev,
 					  sys_timepoint_calc(K_MSEC(config->boot_timeout_ms)));
-#ifdef CONFIG_MFD_FRI3D_COMMUNICATOR_UPDATE_AT_BOOT
-	ret = mfd_fri3d_communicator_update_at_boot(dev, ret);
-#endif
 	if (ret != 0) {
 		LOG_ERR("%s: no answer from the communicator", dev->name);
 		return -ENODEV;

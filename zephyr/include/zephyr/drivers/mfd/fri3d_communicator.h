@@ -184,10 +184,7 @@ typedef void (*mfd_fri3d_communicator_post_update_cb_t)(const struct device *dev
 /**
  * @brief Set the callbacks around a firmware update (one pair per device).
  *
- * Needs CONFIG_MFD_FRI3D_COMMUNICATOR_UPDATE. Both are optional (NULL). For
- * the update at boot (CONFIG_MFD_FRI3D_COMMUNICATOR_UPDATE_AT_BOOT), set them
- * before the device initializes, e.g. from SYS_INIT() at POST_KERNEL with a
- * lower priority than CONFIG_MFD_FRI3D_COMMUNICATOR_INIT_PRIORITY.
+ * Needs CONFIG_MFD_FRI3D_COMMUNICATOR_UPDATE. Both are optional (NULL).
  *
  * @param dev MFD device.
  * @param pre Called before the SWD traffic starts.
@@ -221,6 +218,52 @@ void mfd_fri3d_communicator_set_update_callbacks(const struct device *dev,
  */
 int mfd_fri3d_communicator_update(const struct device *dev, const void *image, size_t len,
 				  mfd_fri3d_communicator_progress_cb_t cb, void *user_data);
+
+/**
+ * @brief Get the version of the bundled firmware image.
+ *
+ * The image comes from CONFIG_MFD_FRI3D_COMMUNICATOR_FIRMWARE, its version from
+ * CONFIG_MFD_FRI3D_COMMUNICATOR_FIRMWARE_VERSION. Together with
+ * mfd_fri3d_communicator_get_version() an application can keep the add-on on
+ * the bundled version, e.g. at start:
+ *
+ * @code{.c}
+ * uint8_t running[3], bundled[3];
+ *
+ * mfd_fri3d_communicator_get_version(dev, running);
+ * if (mfd_fri3d_communicator_get_bundled_version(bundled) == 0 &&
+ *     memcmp(running, bundled, sizeof(bundled)) < 0) {
+ *         mfd_fri3d_communicator_update_bundled(dev, NULL, NULL);
+ * }
+ * @endcode
+ *
+ * Debug builds of the add-on firmware report 255.255.255, so they are left
+ * alone. Needs CONFIG_MFD_FRI3D_COMMUNICATOR_UPDATE.
+ *
+ * @param version Buffer for major, minor and patch.
+ *
+ * @retval 0 Success.
+ * @retval -ENOENT No bundled image.
+ */
+int mfd_fri3d_communicator_get_bundled_version(uint8_t version[3]);
+
+/**
+ * @brief Program the bundled firmware image into the add-on.
+ *
+ * As mfd_fri3d_communicator_update() with the image of
+ * CONFIG_MFD_FRI3D_COMMUNICATOR_FIRMWARE. Needs
+ * CONFIG_MFD_FRI3D_COMMUNICATOR_UPDATE.
+ *
+ * @param dev MFD device.
+ * @param cb Progress callback, or NULL.
+ * @param user_data Passed to @p cb.
+ *
+ * @retval 0 Success: the add-on runs the bundled firmware.
+ * @retval -ENOENT No bundled image.
+ * @retval <0 As mfd_fri3d_communicator_update().
+ */
+int mfd_fri3d_communicator_update_bundled(const struct device *dev,
+					  mfd_fri3d_communicator_progress_cb_t cb, void *user_data);
 
 #ifdef __cplusplus
 }
