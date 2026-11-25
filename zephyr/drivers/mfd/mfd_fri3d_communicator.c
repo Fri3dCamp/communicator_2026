@@ -8,8 +8,7 @@
  * it sends on its UART on every change, as one burst without framing (a pause
  * starts a new report; byte 1 is reserved and 0). With
  * CONFIG_MFD_FRI3D_COMMUNICATOR_UPDATE its firmware can be updated over
- * RVSWD: it gives its I2C pins to SWD on request, the zephyr-rvswd module
- * programs it, and the pins go back to I2C.
+ * RVSWD (mfd_fri3d_communicator_update.c).
  */
 
 #define DT_DRV_COMPAT fri3d_communicator_2026
@@ -25,52 +24,10 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/byteorder.h>
 
-#ifdef CONFIG_MFD_FRI3D_COMMUNICATOR_UPDATE
-#include <rvswd/ch32.h>
-#include <rvswd/rvswd.h>
-#endif
+#include "mfd_fri3d_communicator_priv.h"
 
 LOG_MODULE_REGISTER(mfd_fri3d_communicator, CONFIG_MFD_LOG_LEVEL);
 
-/* key reports waiting for the work queue */
-#define REPORT_QUEUE_LEN 4
-
-struct mfd_fri3d_communicator_config {
-	struct i2c_dt_spec i2c;
-	/* UART that receives the key reports, or NULL */
-	const struct device *uart;
-	uint32_t report_gap_ms;
-	uint32_t probe_period_ms;
-	uint32_t connect_timeout_ms;
-#ifdef CONFIG_MFD_FRI3D_COMMUNICATOR_UPDATE
-	/* RVSWD interface on the add-on's I2C pins, or NULL */
-	const struct device *rvswd;
-	/* enable of the power domain of the other devices on the bus, or none */
-	struct gpio_dt_spec update_power;
-#endif
-};
-
-struct mfd_fri3d_communicator_data {
-	const struct device *dev;
-	/* looks for the add-on */
-	struct k_work_delayable connect_work;
-	/* delivers the queued key reports */
-	struct k_work report_work;
-	struct k_msgq reports;
-	uint8_t reports_buf[REPORT_QUEUE_LEN * FRI3D_COMMUNICATOR_REPORT_SIZE];
-	bool connected;
-	k_timepoint_t connect_end;
-	/* a firmware update is running: the I2C pins are SWD */
-	bool updating;
-	/* UART receive state (interrupt) */
-	uint8_t rx[FRI3D_COMMUNICATOR_REPORT_SIZE];
-	size_t rx_len;
-	uint32_t rx_last;
-	uint8_t version[3];
-	struct mfd_fri3d_communicator_stats stats;
-	mfd_fri3d_communicator_report_cb_t cb;
-	void *user_data;
-};
 
 int mfd_fri3d_communicator_reg_read(const struct device *dev, uint8_t reg, void *data, size_t len)
 {
@@ -246,113 +203,6 @@ static void mfd_fri3d_communicator_uart_isr(const struct device *uart, void *use
 	}
 }
 
-#ifdef CONFIG_MFD_FRI3D_COMMUNICATOR_UPDATE
-
-/* Delay for the add-on to give its I2C pins to SWD after the remap command */
-#define REMAP_DELAY_MS 200
-/* Time for the other devices on the bus to power down and up */
-#define POWER_DELAY_MS 50
-/* Debug module status register: answers when a target is there */
-#define DMSTATUS       0x11
-
-/*
- * Find the add-on on SWD and halt it. A target that just powered up needs the
- * interface reset of rvswd_connect() before it answers, so redo it for every
- * probe.
- */
-static int mfd_fri3d_communicator_find(const struct device *rvswd, k_timeout_t wait,
-				       uint32_t vendor[4])
-{
-	k_timepoint_t end = sys_timepoint_calc(wait);
-
-	do {
-		uint32_t status;
-
-		if (rvswd_connect(rvswd) == 0 && rvswd_read(rvswd, DMSTATUS, &status) == 0 &&
-		    ch32_identify(rvswd, vendor) == 0) {
-			return 0;
-		}
-		k_msleep(2);
-	} while (!sys_timepoint_expired(end));
-
-	return -ETIMEDOUT;
-}
-
-int mfd_fri3d_communicator_update(const struct device *dev, const void *image, size_t len,
-				  mfd_fri3d_communicator_progress_cb_t cb, void *user_data,
-				  k_timeout_t wait)
-{
-	const struct mfd_fri3d_communicator_config *config = dev->config;
-	struct mfd_fri3d_communicator_data *data = dev->data;
-	struct k_work_sync sync;
-	uint32_t vendor[4];
-	const char *chip;
-	int ret;
-
-	if (config->rvswd == NULL) {
-		return -ENOTSUP;
-	}
-	if (!device_is_ready(config->rvswd) ||
-	    (config->update_power.port != NULL && !gpio_is_ready_dt(&config->update_power))) {
-		return -ENODEV;
-	}
-
-	k_work_cancel_delayable_sync(&data->connect_work, &sync);
-	if (data->connected) {
-		/* the running firmware gives its pins to SWD */
-		mfd_fri3d_communicator_config_update(dev, FRI3D_COMMUNICATOR_CONFIG_REMAP,
-						     FRI3D_COMMUNICATOR_CONFIG_REMAP);
-		data->connected = false;
-		k_msleep(REMAP_DELAY_MS);
-	}
-	data->updating = true;
-
-	/*
-	 * The other devices on the bus must not see the SWD traffic (it starts
-	 * like an I2C start condition): switch them off. After the remap
-	 * command: the bus pull-ups are on that rail too.
-	 */
-	if (config->update_power.port != NULL) {
-		gpio_pin_set_dt(&config->update_power, 0);
-		k_msleep(POWER_DELAY_MS);
-	}
-
-	ret = mfd_fri3d_communicator_find(config->rvswd, wait, vendor);
-	if (ret != 0) {
-		LOG_ERR("%s: no communicator on SWD", dev->name);
-	} else {
-		chip = ch32_chip_name(vendor);
-		if (chip == NULL || strncmp(chip, "CH32X03", 7) != 0) {
-			LOG_ERR("%s: not a CH32X03x (vendor bytes %08x %08x)", dev->name,
-				vendor[0], vendor[1]);
-			ret = -ENODEV;
-		} else {
-			LOG_INF("%s: programming %s (%zu bytes)", dev->name, chip, len);
-			/* ends with a reset into the new firmware */
-			ret = ch32x03x_program(config->rvswd, image, len, cb, user_data);
-			if (ret != 0) {
-				LOG_ERR("%s: programming failed: %d", dev->name, ret);
-			}
-		}
-		if (ret != 0) {
-			ch32_reset_and_run(config->rvswd);
-		}
-	}
-
-	/* the pins go back to I2C; the firmware answers again shortly after it starts */
-	rvswd_disconnect(config->rvswd);
-	if (config->update_power.port != NULL) {
-		gpio_pin_set_dt(&config->update_power, 1);
-		k_msleep(POWER_DELAY_MS);
-	}
-	data->updating = false;
-	data->connect_end = sys_timepoint_calc(K_MSEC(config->connect_timeout_ms));
-	k_work_reschedule(&data->connect_work, K_NO_WAIT);
-
-	return ret;
-}
-
-#endif /* CONFIG_MFD_FRI3D_COMMUNICATOR_UPDATE */
 
 static int mfd_fri3d_communicator_init(const struct device *dev)
 {
@@ -461,53 +311,12 @@ static int cmd_communicator_backlight(const struct shell *sh, size_t argc, char 
 	return ret;
 }
 
-#ifdef FRI3D_COMMUNICATOR_HAS_FIRMWARE
-static const uint8_t mfd_fri3d_communicator_firmware[] = {
-#include "fri3d_communicator_firmware.inc"
-};
 
-static void mfd_fri3d_communicator_shell_progress(size_t done, size_t total, void *user_data)
-{
-	const struct shell *sh = user_data;
+SHELL_SUBCMD_SET_CREATE(sub_communicator, (communicator));
+SHELL_CMD_REGISTER(communicator, &sub_communicator, "Communicator add-on", NULL);
 
-	if (done == total || done % 4096 == 0) {
-		shell_print(sh, "%zu/%zu", done, total);
-	}
-}
-
-static int cmd_communicator_update(const struct shell *sh, size_t argc, char **argv)
-{
-	int wait_s = argc > 1 ? atoi(argv[1]) : 0;
-	int ret;
-
-	shell_print(sh, "installing v%s (%zu bytes)%s",
-		    CONFIG_MFD_FRI3D_COMMUNICATOR_FIRMWARE_VERSION,
-		    sizeof(mfd_fri3d_communicator_firmware),
-		    wait_s > 0 ? ", connect the communicator now" : "");
-	ret = mfd_fri3d_communicator_update(shell_communicator, mfd_fri3d_communicator_firmware,
-					    sizeof(mfd_fri3d_communicator_firmware),
-					    mfd_fri3d_communicator_shell_progress, (void *)sh,
-					    K_SECONDS(MAX(wait_s, 1)));
-	if (ret != 0) {
-		shell_error(sh, "update failed: %d", ret);
-	} else {
-		shell_print(sh, "done; restart the badge (the other devices on the bus were off)");
-	}
-	return ret;
-}
-#endif /* FRI3D_COMMUNICATOR_HAS_FIRMWARE */
-
-SHELL_STATIC_SUBCMD_SET_CREATE(communicator_cmds,
-	SHELL_CMD(status, NULL, "Firmware version, configuration and counters",
-		  cmd_communicator_status),
-	SHELL_CMD_ARG(backlight, NULL, "Keyboard backlight: backlight <0-100>",
-		      cmd_communicator_backlight, 2, 0),
-#ifdef FRI3D_COMMUNICATOR_HAS_FIRMWARE
-	SHELL_CMD_ARG(update, NULL,
-		      "Install the bundled firmware: update [seconds to wait for the add-on]",
-		      cmd_communicator_update, 1, 1),
-#endif
-	SHELL_SUBCMD_SET_END);
-
-SHELL_CMD_REGISTER(communicator, &communicator_cmds, "Communicator add-on", NULL);
+SHELL_SUBCMD_ADD((communicator), status, NULL, "Firmware version, configuration and counters",
+		 cmd_communicator_status, 1, 0);
+SHELL_SUBCMD_ADD((communicator), backlight, NULL, "Keyboard backlight: backlight <0-100>",
+		 cmd_communicator_backlight, 2, 0);
 #endif /* CONFIG_SHELL */

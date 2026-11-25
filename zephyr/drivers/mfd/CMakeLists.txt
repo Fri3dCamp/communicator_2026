@@ -4,6 +4,7 @@
 # sources go into Zephyr's drivers__mfd library (named relative to zephyr/)
 zephyr_library_amend(${ZEPHYR_CURRENT_MODULE_DIR}/zephyr)
 zephyr_library_sources_ifdef(CONFIG_MFD_FRI3D_COMMUNICATOR mfd_fri3d_communicator.c)
+zephyr_library_sources_ifdef(CONFIG_MFD_FRI3D_COMMUNICATOR_UPDATE mfd_fri3d_communicator_update.c)
 
 # The update uses the zephyr-rvswd module (west project, module name rvswd)
 if(CONFIG_MFD_FRI3D_COMMUNICATOR_UPDATE AND NOT CONFIG_RVSWD_CH32X03X)
