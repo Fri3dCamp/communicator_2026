@@ -1,0 +1,60 @@
+# Copyright (c) 2026 Bert Outtier <outtierbert@gmail.com>
+# SPDX-License-Identifier: Apache-2.0
+
+if MFD
+
+config MFD_FRI3D_COMMUNICATOR
+	bool "Fri3d Camp 2026 communicator add-on"
+	default y
+	depends on DT_HAS_FRI3D_COMMUNICATOR_2026_ENABLED
+	depends on MULTITHREADING # the MFD uses work items and a message queue
+	select I2C
+	select UART_INTERRUPT_DRIVEN if $(dt_compat_any_has_prop,$(DT_COMPAT_FRI3D_COMMUNICATOR_2026),uart)
+	help
+	  Multi-function device driver for the CH32X035 keyboard controller of
+	  the Fri3d Camp 2026 communicator add-on on the expansion connector:
+	  its registers over I2C (version, configuration, backlight) and the
+	  HID key reports it sends on its UART.
+
+if MFD_FRI3D_COMMUNICATOR
+
+config MFD_FRI3D_COMMUNICATOR_INIT_PRIORITY
+	int "Initialization priority"
+	default MFD_INIT_PRIORITY
+	help
+	  Must be after the I2C controller and the UART.
+
+config MFD_FRI3D_COMMUNICATOR_UPDATE
+	bool "Communicator firmware update over RVSWD"
+	help
+	  Update the keyboard controller's firmware with
+	  mfd_fri3d_communicator_update(), through the RVSWD interface of the
+	  communicator's rvswd property: the firmware gives its I2C pins to SWD
+	  on request (the remap bit of its configuration register). Needs the
+	  zephyr-rvswd module (github.com/bertouttier/zephyr-rvswd) in the west
+	  workspace and an enabled wch,rvswd node as the communicator's rvswd
+	  property (<fri3d/communicator.dtsi> has it); the build stops if either
+	  is missing.
+
+if MFD_FRI3D_COMMUNICATOR_UPDATE
+
+config MFD_FRI3D_COMMUNICATOR_FIRMWARE
+	string "Communicator firmware image to bundle"
+	help
+	  Path to a communicator firmware binary (communicator_2026 release
+	  build), absolute or relative to the application directory, to link
+	  into the application. Empty: no image. With an image, the
+	  "communicator update" shell command installs it.
+
+config MFD_FRI3D_COMMUNICATOR_FIRMWARE_VERSION
+	string "Version of the bundled firmware image"
+	default "0.0.0"
+	help
+	  Version of the image in MFD_FRI3D_COMMUNICATOR_FIRMWARE, as
+	  major.minor.patch.
+
+endif # MFD_FRI3D_COMMUNICATOR_UPDATE
+
+endif # MFD_FRI3D_COMMUNICATOR
+
+endif # MFD

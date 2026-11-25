@@ -1,0 +1,28 @@
+# Copyright (c) 2026 Bert Outtier <outtierbert@gmail.com>
+# SPDX-License-Identifier: Apache-2.0
+
+# sources go into Zephyr's drivers__mfd library (named relative to zephyr/)
+zephyr_library_amend(${ZEPHYR_CURRENT_MODULE_DIR}/zephyr)
+zephyr_library_sources_ifdef(CONFIG_MFD_FRI3D_COMMUNICATOR mfd_fri3d_communicator.c)
+
+# The update uses the zephyr-rvswd module (west project, module name rvswd)
+if(CONFIG_MFD_FRI3D_COMMUNICATOR_UPDATE AND NOT CONFIG_RVSWD_CH32X03X)
+  if(NOT ZEPHYR_RVSWD_MODULE_DIR)
+    message(FATAL_ERROR "CONFIG_MFD_FRI3D_COMMUNICATOR_UPDATE needs the zephyr-rvswd module: "
+            "add github.com/bertouttier/zephyr-rvswd to the west manifest")
+  endif()
+  message(FATAL_ERROR "CONFIG_MFD_FRI3D_COMMUNICATOR_UPDATE needs an enabled wch,rvswd node "
+          "as the communicator's rvswd property")
+endif()
+
+# Communicator firmware image to link in (CONFIG_MFD_FRI3D_COMMUNICATOR_FIRMWARE)
+if(CONFIG_MFD_FRI3D_COMMUNICATOR_UPDATE AND NOT CONFIG_MFD_FRI3D_COMMUNICATOR_FIRMWARE STREQUAL "")
+  get_filename_component(fri3d_communicator_fw ${CONFIG_MFD_FRI3D_COMMUNICATOR_FIRMWARE} ABSOLUTE
+                         BASE_DIR ${APPLICATION_SOURCE_DIR})
+  if(NOT EXISTS ${fri3d_communicator_fw})
+    message(FATAL_ERROR "CONFIG_MFD_FRI3D_COMMUNICATOR_FIRMWARE: ${fri3d_communicator_fw} not found")
+  endif()
+  generate_inc_file_for_target(${ZEPHYR_CURRENT_LIBRARY} ${fri3d_communicator_fw}
+                               ${ZEPHYR_BINARY_DIR}/include/generated/fri3d_communicator_firmware.inc)
+  zephyr_library_compile_definitions(FRI3D_COMMUNICATOR_HAS_FIRMWARE)
+endif()

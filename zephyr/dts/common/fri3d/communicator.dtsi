@@ -1,0 +1,37 @@
+/*
+ * Copyright (c) 2026 Bert Outtier <outtierbert@gmail.com>
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Communicator 2026 add-on on the Fri3d badge's expansion connector (2026
+ * badge: main I2C on IO9/IO18, UART0 RX on IO44, 3V3_AUX). It sends its HID
+ * key reports on the UART.
+ */
+
+#include <zephyr/dt-bindings/gpio/gpio.h>
+
+/ {
+	/*
+	 * Debug interface of the add-on, to update its firmware: its I2C pins
+	 * become SWD after the remap command, and go back to I2C0 when the
+	 * session ends.
+	 */
+	communicator_swd: communicator-swd {
+		compatible = "wch,rvswd";
+		swdio-gpios = <&gpio0 9 GPIO_ACTIVE_HIGH>;  /* IO9, I2C0 SDA */
+		swclk-gpios = <&gpio0 18 GPIO_ACTIVE_HIGH>; /* IO18, I2C0 SCL */
+		pinctrl-0 = <&i2c0_default>;
+		pinctrl-names = "default";
+	};
+};
+
+&i2c0 {
+	communicator: communicator@39 {
+		compatible = "fri3d,communicator-2026";
+		reg = <0x39>;
+		uart = <&uart0>;
+		rvswd = <&communicator_swd>;
+		/* the other devices on the bus are off while updating the add-on */
+		update-power-domain = <&aux_3v3>;
+	};
+};

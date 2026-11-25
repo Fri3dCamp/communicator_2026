@@ -1,0 +1,193 @@
+/*
+ * Copyright (c) 2026 Bert Outtier <outtierbert@gmail.com>
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/**
+ * @file
+ * @brief Fri3d Camp 2026 communicator add-on (multi-function device)
+ *
+ * The CH32X035 keyboard controller of the communicator, compatible
+ * "fri3d,communicator-2026": I2C registers of the communicator_2026 firmware
+ * and the HID key reports it sends on its UART.
+ */
+
+#ifndef ZEPHYR_INCLUDE_DRIVERS_MFD_FRI3D_COMMUNICATOR_H_
+#define ZEPHYR_INCLUDE_DRIVERS_MFD_FRI3D_COMMUNICATOR_H_
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+#include <zephyr/device.h>
+#include <zephyr/kernel.h>
+#include <zephyr/sys/util.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/** Firmware version: major, minor, patch (debug builds: 255.255.255) */
+#define FRI3D_COMMUNICATOR_REG_VERSION   0x00
+/** Current HID key report (8 bytes: modifiers, reserved, 6 key codes) */
+#define FRI3D_COMMUNICATOR_REG_REPORT    0x03
+/** Configuration (1 byte, FRI3D_COMMUNICATOR_CONFIG_*) */
+#define FRI3D_COMMUNICATOR_REG_CONFIG    0x0b
+/** Keyboard backlight, 0-100 (2 bytes, little endian) */
+#define FRI3D_COMMUNICATOR_REG_BACKLIGHT 0x0c
+
+/** @name Configuration register bits (communicator_2026 main)
+ * @{
+ */
+/** Interrupt output instead of the UART (not implemented by the firmware) */
+#define FRI3D_COMMUNICATOR_CONFIG_INT    BIT(0)
+/** Reboot into the WCH bootloader */
+#define FRI3D_COMMUNICATOR_CONFIG_REBOOT BIT(1)
+/** Give the I2C pins to SWD (firmware update) */
+#define FRI3D_COMMUNICATOR_CONFIG_REMAP  BIT(2)
+/** Send the key reports on the UART (on after boot) */
+#define FRI3D_COMMUNICATOR_CONFIG_UART   BIT(3)
+/** @} */
+
+/** Size of a HID key report */
+#define FRI3D_COMMUNICATOR_REPORT_SIZE 8
+
+/**
+ * @brief Key report callback
+ *
+ * Called from the system work queue with every HID key report the add-on
+ * sends on its UART: report[0] the modifier bits, report[2..7] the key codes
+ * (HID usage IDs, keyboard page) of the keys held.
+ *
+ * @param dev MFD device.
+ * @param report The report (FRI3D_COMMUNICATOR_REPORT_SIZE bytes).
+ * @param user_data As given to mfd_fri3d_communicator_set_report_callback().
+ */
+typedef void (*mfd_fri3d_communicator_report_cb_t)(const struct device *dev,
+						   const uint8_t *report, void *user_data);
+
+/** Counters, for diagnostics */
+struct mfd_fri3d_communicator_stats {
+	/** Bytes received on the UART */
+	uint32_t uart_bytes;
+	/** Key reports delivered */
+	uint32_t reports;
+	/** Reports dropped: out of step (reserved byte not 0) or queue full */
+	uint32_t dropped;
+};
+
+/**
+ * @brief Read registers.
+ *
+ * @retval 0 Success.
+ * @retval -EBUSY A firmware update is running.
+ * @retval <0 I2C error.
+ */
+int mfd_fri3d_communicator_reg_read(const struct device *dev, uint8_t reg, void *data, size_t len);
+
+/**
+ * @brief Write registers.
+ *
+ * @retval 0 Success.
+ * @retval -EBUSY A firmware update is running.
+ * @retval <0 I2C error.
+ */
+int mfd_fri3d_communicator_reg_write(const struct device *dev, uint8_t reg, const void *data,
+				     size_t len);
+
+/**
+ * @brief Change configuration bits (read, modify, write).
+ *
+ * @param dev MFD device.
+ * @param mask FRI3D_COMMUNICATOR_CONFIG_* bits to change.
+ * @param value Their new values.
+ *
+ * @retval 0 Success.
+ * @retval <0 As mfd_fri3d_communicator_reg_read() and _reg_write().
+ */
+int mfd_fri3d_communicator_config_update(const struct device *dev, uint8_t mask, uint8_t value);
+
+/**
+ * @brief Set the keyboard backlight.
+ *
+ * @param dev MFD device.
+ * @param percent Brightness, 0-100.
+ *
+ * @retval 0 Success.
+ * @retval -EINVAL Brightness above 100.
+ * @retval <0 As mfd_fri3d_communicator_reg_write().
+ */
+int mfd_fri3d_communicator_set_backlight(const struct device *dev, uint8_t percent);
+
+/**
+ * @brief Whether the add-on answered since boot (or since the last update).
+ */
+bool mfd_fri3d_communicator_is_connected(const struct device *dev);
+
+/**
+ * @brief Firmware version the add-on reported when it connected.
+ *
+ * @param dev MFD device.
+ * @param version Major, minor, patch; zeros before it connected.
+ */
+void mfd_fri3d_communicator_get_version(const struct device *dev, uint8_t version[3]);
+
+/**
+ * @brief Set the key report callback (one per device).
+ *
+ * @param dev MFD device.
+ * @param cb Callback, or NULL.
+ * @param user_data Passed to the callback.
+ */
+void mfd_fri3d_communicator_set_report_callback(const struct device *dev,
+						mfd_fri3d_communicator_report_cb_t cb,
+						void *user_data);
+
+/**
+ * @brief Get the counters.
+ */
+void mfd_fri3d_communicator_get_stats(const struct device *dev,
+				      struct mfd_fri3d_communicator_stats *stats);
+
+/**
+ * @brief Update progress callback.
+ *
+ * @param done Bytes programmed.
+ * @param total Bytes to program.
+ * @param user_data As given to mfd_fri3d_communicator_update().
+ */
+typedef void (*mfd_fri3d_communicator_progress_cb_t)(size_t done, size_t total,
+						     void *user_data);
+
+/**
+ * @brief Program a firmware image into the add-on over RVSWD.
+ *
+ * Asks the firmware to give its I2C pins to SWD (remap), switches the other
+ * devices on the bus off (update-power-domain), programs the image and
+ * restarts the add-on. Without a running firmware, the add-on must be
+ * connected within @p wait (plug it in, or power it up). Blocks for about
+ * ten seconds. Needs CONFIG_MFD_FRI3D_COMMUNICATOR_UPDATE.
+ *
+ * @param dev MFD device.
+ * @param image Firmware binary (communicator_2026 release build).
+ * @param len Its length.
+ * @param cb Progress callback, or NULL.
+ * @param user_data Passed to @p cb.
+ * @param wait How long to look for the add-on on SWD.
+ *
+ * @retval 0 Success: the add-on runs the new firmware.
+ * @retval -ENOTSUP No rvswd property.
+ * @retval -ENODEV RVSWD or power domain not ready, or not a CH32X03x.
+ * @retval -ETIMEDOUT No add-on on SWD within @p wait.
+ * @retval <0 Programming error.
+ */
+int mfd_fri3d_communicator_update(const struct device *dev, const void *image, size_t len,
+				  mfd_fri3d_communicator_progress_cb_t cb, void *user_data,
+				  k_timeout_t wait);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* ZEPHYR_INCLUDE_DRIVERS_MFD_FRI3D_COMMUNICATOR_H_ */

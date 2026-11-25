@@ -1,0 +1,65 @@
+# Copyright (c) 2026 Bert Outtier <outtierbert@gmail.com>
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  CH32X035 keyboard controller of the Fri3d Camp 2026 communicator add-on,
+  running the communicator_2026 firmware as an I2C slave (address 0x39) on
+  the badge's expansion connector.
+
+  Over I2C it has its firmware version, the current HID key report, a
+  configuration register (UART output, firmware remap to SWD, reboot to the
+  bootloader) and the keyboard backlight. On its UART (115200 baud) it sends
+  the 8-byte HID key report on every change; the driver hands those to a
+  callback. The add-on's speaker amplifier and microphone sit on the badge's
+  I2S and are not part of this device.
+
+    &i2c0 {
+        communicator: communicator@39 {
+            compatible = "fri3d,communicator-2026";
+            reg = <0x39>;
+            uart = <&uart0>;
+        };
+    };
+
+compatible: "fri3d,communicator-2026"
+
+include: i2c-device.yaml
+
+properties:
+  uart:
+    type: phandle
+    description: |
+      UART that receives the add-on's HID key reports (115200 baud, expansion
+      connector pin 3, badge IO44). Without it there are no key reports.
+
+  rvswd:
+    type: phandle
+    description: |
+      RVSWD interface (wch,rvswd) on the add-on's I2C pins (the expansion I2C
+      bus), to update its firmware (CONFIG_MFD_FRI3D_COMMUNICATOR_UPDATE).
+
+  update-power-domain:
+    type: phandle
+    description: |
+      Power domain (power-domain-gpio) of the other devices on the expansion
+      I2C bus, 3V3_AUX on the badge. It is switched off while the add-on is
+      updated, so they do not see the SWD traffic. Their drivers are not
+      initialized again afterwards: restart.
+
+  report-gap-ms:
+    type: int
+    default: 2
+    description: |
+      A pause of more than this between two UART bytes starts a new key
+      report: the add-on sends a report as one burst (0.7 ms) without
+      framing.
+
+  probe-period-ms:
+    type: int
+    default: 500
+    description: Period to look for the add-on after boot and after an update.
+
+  connect-timeout-ms:
+    type: int
+    default: 3000
+    description: How long to look for the add-on after boot and after an update.
