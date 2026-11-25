@@ -4,13 +4,14 @@
  * SPDX-License-Identifier: Apache-2.0
  *
  * Shell commands of the Fri3d Camp 2026 communicator add-on
- * (CONFIG_MFD_FRI3D_COMMUNICATOR_SHELL): "communicator status|backlight", and
+ * (CONFIG_MFD_FRI3D_COMMUNICATOR_SHELL): "communicator status|backlight|amp", and
  * with a bundled firmware image "communicator update".
  */
 
 #define DT_DRV_COMPAT fri3d_communicator_2026
 
 #include <stdlib.h>
+#include <string.h>
 
 #include <zephyr/drivers/mfd/fri3d_communicator.h>
 #include <zephyr/kernel.h>
@@ -63,7 +64,8 @@ static int cmd_communicator_status(const struct shell *sh, size_t argc, char **a
 
 	if (mfd_fri3d_communicator_reg_read(shell_communicator, FRI3D_COMMUNICATOR_REG_CONFIG, &cfg,
 					    1) == 0) {
-		shell_print(sh, "configuration 0x%02x", cfg);
+		shell_print(sh, "configuration 0x%02x: speaker amplifier %s", cfg,
+			    (cfg & FRI3D_COMMUNICATOR_CONFIG_AMP_SHUTDOWN) != 0 ? "shut down" : "on");
 	}
 	shell_print(sh, "UART %u bytes, %u key reports, %u dropped", st.uart_bytes, st.reports,
 		    st.dropped);
@@ -88,6 +90,32 @@ static int cmd_communicator_backlight(const struct shell *sh, size_t argc, char 
 		return -EINVAL;
 	}
 	ret = mfd_fri3d_communicator_set_backlight(shell_communicator, (uint8_t)percent);
+	if (ret != 0) {
+		shell_error(sh, "failed: %d", ret);
+	}
+
+	return ret;
+}
+
+static int cmd_communicator_amp(const struct shell *sh, size_t argc, char **argv)
+{
+	bool on = strcmp(argv[1], "on") == 0;
+	int ret;
+
+	ARG_UNUSED(argc);
+
+	ret = shell_communicator_ready(sh);
+	if (ret != 0) {
+		return ret;
+	}
+
+	if (!on && strcmp(argv[1], "off") != 0) {
+		shell_error(sh, "on or off");
+		return -EINVAL;
+	}
+	ret = mfd_fri3d_communicator_config_update(shell_communicator,
+						   FRI3D_COMMUNICATOR_CONFIG_AMP_SHUTDOWN,
+						   on ? 0 : FRI3D_COMMUNICATOR_CONFIG_AMP_SHUTDOWN);
 	if (ret != 0) {
 		shell_error(sh, "failed: %d", ret);
 	}
@@ -135,6 +163,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_communicator,
 		      cmd_communicator_status, 1, 0),
 	SHELL_CMD_ARG(backlight, NULL, "Keyboard backlight: backlight <0-100>",
 		      cmd_communicator_backlight, 2, 0),
+	SHELL_CMD_ARG(amp, NULL, "Speaker amplifier: amp on|off", cmd_communicator_amp, 2, 0),
 #ifdef FRI3D_COMMUNICATOR_HAS_FIRMWARE
 	SHELL_CMD_ARG(update, NULL, "Install the bundled add-on firmware", cmd_communicator_update,
 		      1, 0),

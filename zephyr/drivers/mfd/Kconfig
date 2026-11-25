@@ -29,7 +29,8 @@ config MFD_FRI3D_COMMUNICATOR_SHELL
 	default y
 	depends on SHELL
 	help
-	  The "communicator" shell command: status, keyboard backlight, and
+	  The "communicator" shell command: status, keyboard backlight, speaker
+	  amplifier, and
 	  with a bundled image (MFD_FRI3D_COMMUNICATOR_FIRMWARE) its
 	  installation.
 
