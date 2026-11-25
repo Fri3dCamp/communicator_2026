@@ -45,3 +45,10 @@ properties:
       A pause of more than this between two UART bytes starts a new key
       report: the add-on sends a report as one burst (0.7 ms) without
       framing.
+
+  boot-timeout-ms:
+    type: int
+    default: 1500
+    description: |
+      Time to wait for the add-on to answer on I2C at init, after it powers
+      up with the badge.

@@ -121,15 +121,10 @@ int mfd_fri3d_communicator_config_update(const struct device *dev, uint8_t mask,
 int mfd_fri3d_communicator_set_backlight(const struct device *dev, uint8_t percent);
 
 /**
- * @brief Whether the add-on answered after boot (or after the last update).
- */
-bool mfd_fri3d_communicator_is_connected(const struct device *dev);
-
-/**
- * @brief Firmware version the add-on reported when it connected.
+ * @brief Firmware version the add-on reported at init (or after an update).
  *
  * @param dev MFD device.
- * @param version Major, minor, patch; zeros before it connected.
+ * @param version Major, minor, patch.
  */
 void mfd_fri3d_communicator_get_version(const struct device *dev, uint8_t version[3]);
 
@@ -189,7 +184,10 @@ typedef void (*mfd_fri3d_communicator_post_update_cb_t)(const struct device *dev
 /**
  * @brief Set the callbacks around a firmware update (one pair per device).
  *
- * Needs CONFIG_MFD_FRI3D_COMMUNICATOR_UPDATE. Both are optional (NULL).
+ * Needs CONFIG_MFD_FRI3D_COMMUNICATOR_UPDATE. Both are optional (NULL). For
+ * the update at boot (CONFIG_MFD_FRI3D_COMMUNICATOR_UPDATE_AT_BOOT), set them
+ * before the device initializes, e.g. from SYS_INIT() at POST_KERNEL with a
+ * lower priority than CONFIG_MFD_FRI3D_COMMUNICATOR_INIT_PRIORITY.
  *
  * @param dev MFD device.
  * @param pre Called before the SWD traffic starts.
@@ -204,29 +202,25 @@ void mfd_fri3d_communicator_set_update_callbacks(const struct device *dev,
 /**
  * @brief Program a firmware image into the add-on over RVSWD.
  *
- * Asks the firmware to give its I2C pins to SWD (remap), programs the image
- * and restarts the add-on; the callbacks of
+ * Asks the firmware to give its I2C pins to SWD (remap), programs the image,
+ * restarts the add-on and reads its version again; the callbacks of
  * mfd_fri3d_communicator_set_update_callbacks() run around the SWD session.
- * Without a running firmware, the add-on must be connected within @p wait
- * (plug it in, or power it up). Blocks for about ten seconds. Needs
- * CONFIG_MFD_FRI3D_COMMUNICATOR_UPDATE.
+ * Blocks for about ten seconds. Needs CONFIG_MFD_FRI3D_COMMUNICATOR_UPDATE.
  *
  * @param dev MFD device.
  * @param image Firmware binary (communicator_2026 release build).
  * @param len Its length.
  * @param cb Progress callback, or NULL.
  * @param user_data Passed to @p cb.
- * @param wait How long to look for the add-on on SWD.
  *
  * @retval 0 Success: the add-on runs the new firmware.
  * @retval -ENOTSUP No rvswd property.
  * @retval -ENODEV RVSWD not ready, or not a CH32X03x.
- * @retval -ETIMEDOUT No add-on on SWD within @p wait.
+ * @retval -ETIMEDOUT The add-on did not answer on I2C after the update.
  * @retval <0 Programming error.
  */
 int mfd_fri3d_communicator_update(const struct device *dev, const void *image, size_t len,
-				  mfd_fri3d_communicator_progress_cb_t cb, void *user_data,
-				  k_timeout_t wait);
+				  mfd_fri3d_communicator_progress_cb_t cb, void *user_data);
 
 #ifdef __cplusplus
 }

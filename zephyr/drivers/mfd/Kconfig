@@ -53,6 +53,18 @@ config MFD_FRI3D_COMMUNICATOR_FIRMWARE_VERSION
 	  Version of the image in MFD_FRI3D_COMMUNICATOR_FIRMWARE, as
 	  major.minor.patch.
 
+config MFD_FRI3D_COMMUNICATOR_UPDATE_AT_BOOT
+	bool "Install the bundled image at boot when the add-on runs an older version"
+	help
+	  At init, if the add-on reports an older version than
+	  MFD_FRI3D_COMMUNICATOR_FIRMWARE_VERSION, or does not answer at all
+	  (e.g. no firmware), install the bundled image. Debug builds of the
+	  add-on firmware report 255.255.255 and are left alone. Takes about 10
+	  seconds during init. The update callbacks
+	  (mfd_fri3d_communicator_set_update_callbacks()) must be set before the
+	  device initializes. The bundled version must match the image, or the
+	  add-on is updated at every start.
+
 endif # MFD_FRI3D_COMMUNICATOR_UPDATE
 
 endif # MFD_FRI3D_COMMUNICATOR

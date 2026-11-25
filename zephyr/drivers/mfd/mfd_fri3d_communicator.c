@@ -86,13 +86,6 @@ int mfd_fri3d_communicator_set_backlight(const struct device *dev, uint8_t perce
 						sizeof(buf));
 }
 
-bool mfd_fri3d_communicator_is_connected(const struct device *dev)
-{
-	struct mfd_fri3d_communicator_data *data = dev->data;
-
-	return data->connected;
-}
-
 void mfd_fri3d_communicator_get_version(const struct device *dev, uint8_t version[3])
 {
 	struct mfd_fri3d_communicator_data *data = dev->data;
@@ -118,37 +111,21 @@ void mfd_fri3d_communicator_get_stats(const struct device *dev,
 	*stats = data->stats;
 }
 
-static int mfd_fri3d_communicator_connect(const struct device *dev)
+int mfd_fri3d_communicator_wait(const struct device *dev, k_timepoint_t timeout)
 {
+	const struct mfd_fri3d_communicator_config *config = dev->config;
 	struct mfd_fri3d_communicator_data *data = dev->data;
-	int ret;
 
-	ret = mfd_fri3d_communicator_reg_read(dev, FRI3D_COMMUNICATOR_REG_VERSION, data->version,
-					      sizeof(data->version));
-	if (ret != 0) {
-		return ret;
+	/* straight on the bus: also during an update */
+	while (i2c_burst_read_dt(&config->i2c, FRI3D_COMMUNICATOR_REG_VERSION, data->version,
+				 sizeof(data->version)) != 0) {
+		if (sys_timepoint_expired(timeout)) {
+			return -ETIMEDOUT;
+		}
+		k_msleep(50);
 	}
-	data->connected = true;
-	LOG_INF("%s: connected, firmware v%u.%u.%u", dev->name, data->version[0],
-		data->version[1], data->version[2]);
 
 	return 0;
-}
-
-static void mfd_fri3d_communicator_connect_work(struct k_work *work)
-{
-	struct k_work_delayable *dwork = k_work_delayable_from_work(work);
-	struct mfd_fri3d_communicator_data *data =
-		CONTAINER_OF(dwork, struct mfd_fri3d_communicator_data, connect_work);
-	const struct device *dev = data->dev;
-
-	if (data->updating || data->connected) {
-		return;
-	}
-	/* the devicetree says there is an add-on: no answer is an error */
-	if (mfd_fri3d_communicator_connect(dev) != 0) {
-		LOG_ERR("%s: no answer from the communicator", dev->name);
-	}
 }
 
 static void mfd_fri3d_communicator_report_work(struct k_work *work)
@@ -204,9 +181,9 @@ static int mfd_fri3d_communicator_init(const struct device *dev)
 {
 	const struct mfd_fri3d_communicator_config *config = dev->config;
 	struct mfd_fri3d_communicator_data *data = dev->data;
+	int ret;
 
 	data->dev = dev;
-	k_work_init_delayable(&data->connect_work, mfd_fri3d_communicator_connect_work);
 	k_work_init(&data->report_work, mfd_fri3d_communicator_report_work);
 	k_msgq_init(&data->reports, (char *)data->reports_buf, FRI3D_COMMUNICATOR_REPORT_SIZE,
 		    REPORT_QUEUE_LEN);
@@ -215,6 +192,20 @@ static int mfd_fri3d_communicator_init(const struct device *dev)
 		LOG_ERR("%s: I2C bus not ready", dev->name);
 		return -ENODEV;
 	}
+
+	/* the devicetree says the add-on is there: wait for its firmware to answer */
+	ret = mfd_fri3d_communicator_wait(dev,
+					  sys_timepoint_calc(K_MSEC(config->boot_timeout_ms)));
+#ifdef CONFIG_MFD_FRI3D_COMMUNICATOR_UPDATE_AT_BOOT
+	ret = mfd_fri3d_communicator_update_at_boot(dev, ret);
+#endif
+	if (ret != 0) {
+		LOG_ERR("%s: no answer from the communicator", dev->name);
+		return -ENODEV;
+	}
+
+	LOG_INF("%s: firmware v%u.%u.%u", dev->name, data->version[0], data->version[1],
+		data->version[2]);
 
 	if (config->uart != NULL) {
 #ifdef CONFIG_UART_INTERRUPT_DRIVEN
@@ -228,9 +219,6 @@ static int mfd_fri3d_communicator_init(const struct device *dev)
 #endif
 	}
 
-	/* connect from the work queue, once the add-on's firmware is up */
-	k_work_schedule(&data->connect_work, K_TIMEOUT_ABS_MS(MFD_FRI3D_COMMUNICATOR_START_MS));
-
 	return 0;
 }
 
@@ -240,6 +228,7 @@ static int mfd_fri3d_communicator_init(const struct device *dev)
 		.uart = COND_CODE_1(DT_INST_NODE_HAS_PROP(inst, uart),                             \
 				    (DEVICE_DT_GET(DT_INST_PHANDLE(inst, uart))), (NULL)),         \
 		.report_gap_ms = DT_INST_PROP(inst, report_gap_ms),                                \
+		.boot_timeout_ms = DT_INST_PROP(inst, boot_timeout_ms),                            \
 		IF_ENABLED(CONFIG_MFD_FRI3D_COMMUNICATOR_UPDATE,                                   \
 			   (.rvswd = COND_CODE_1(DT_INST_NODE_HAS_PROP(inst, rvswd),               \
 						 (DEVICE_DT_GET(DT_INST_PHANDLE(inst, rvswd))),     \
@@ -266,10 +255,6 @@ static int cmd_communicator_status(const struct shell *sh, size_t argc, char **a
 	uint8_t version[3];
 	uint8_t cfg;
 
-	if (!mfd_fri3d_communicator_is_connected(shell_communicator)) {
-		shell_print(sh, "no communicator");
-		return 0;
-	}
 	mfd_fri3d_communicator_get_version(shell_communicator, version);
 	mfd_fri3d_communicator_get_stats(shell_communicator, &st);
 	shell_print(sh, "firmware v%u.%u.%u", version[0], version[1], version[2]);
