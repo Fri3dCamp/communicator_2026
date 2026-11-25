@@ -1,4 +1,5 @@
 #include <ch32x035.h> /* both X033 and X035 */
+#include <stddef.h>   /* offsetof() */
 #include <stdlib.h>   /* atoi() */
 #include <string.h>   /* memset() */
 
@@ -69,6 +70,16 @@
 #define BACKLIGHT_TIM_CVR         TIM1->CH4CVR            // TIM1 Channel 4 compare register
 #define BACKLIGHT_TIM_DMA_CHANNEL DMA1_Channel5           // DMA channel for TIM1_UP
 
+/*
+ * Speaker amplifier (MAX98357A) shutdown, from rev 01 on: PC0 drives SD_MODE,
+ * which a 1 MOhm pull-up to VSYS holds at the (left + right) / 2 level.
+ * Released (floating input) keeps that level and the amplifier on, low (the
+ * X035 has no open-drain output) shuts it down. Driving it high would select
+ * the left channel only.
+ */
+#define AMP_SD_PORT GPIOC
+#define AMP_SD_PIN  GPIO_Pin_0
+
 /* UART */
 #define UART_PORT   GPIOB
 #define UART_TX_PIN GPIO_Pin_10 // PB10: UART TX
@@ -114,29 +125,32 @@ typedef struct __attribute__((packed))
 {
     uint8_t version[3];      // version number
     key_report_t key_report; // reference to the button state byte in the result buffer
-    uint8_t enable_int : 1;         // configuration flag to enable interrupt output instead of UART output (TODO)
-    uint8_t reboot : 1;             // configuration flag to trigger a reboot to bootloader
-    uint8_t remap : 1;              // write 1 to remap the SWD to the I2C pins
-    uint8_t enable_uart_output : 1; // configuration flag to enable sending the HID report over UART; defaults to 1. When 0, UART is disabled and its pins are tri-stated
-    uint8_t reserved : 4;           // reserved
+    uint8_t reboot : 1;       // write 1 to reboot into the bootloader
+    uint8_t remap : 1;        // write 1 to remap the SWD to the I2C pins
+    uint8_t amp_shutdown : 1; // write 1 to shut the speaker amplifier down (rev 01 and later)
+    uint8_t reserved : 5;     // reserved
     uint16_t backlight;      // backlight PWM value
 } addon_data_t;
 
 _Static_assert(sizeof(addon_data_t) == RESULT_BUFFER_SIZE, "raw data and struct size are not aligned!");
 
+/*
+ * Every flag has its own byte: writing a byte is a single store, while writing
+ * a bitfield is a read-modify-write of the whole byte that can overwrite a flag
+ * set by an interrupt in between (e.g. TIM3 setting flag_matrix_scan_done while
+ * the main loop clears flag_config_changed). They are volatile because the main
+ * loop polls flags that are set by interrupt handlers.
+ */
 typedef struct
 {
-    uint8_t flag_matrix_scan_done : 1;    // flag to indicate that the button matrix state has changed
-    uint8_t flag_int_should_clear : 1;    // flag to indicate that the interrupt should be cleared
-    uint8_t flag_button_scan_halfway : 1; // flag to indicate that the matrix scan is halfway
-    uint8_t flag_caps_lock : 1;           // reserved for future use
-    uint8_t flag_config_changed : 1;      // flag to indicate that the configuration has changed through I2C
-    uint8_t flag_slave_first_write : 1;   // set on every ADDR phase; the next RXNE byte is the register offset
-    uint8_t flag_uart_enabled : 1;
-    uint8_t reserved : 1;                 // reserved for future use
-    uint8_t matrix_state[N_COLS];         // current matrix state
+    volatile uint8_t flag_matrix_scan_done;    // flag to indicate that the button matrix state has changed
+    volatile uint8_t flag_caps_lock;           // caps lock is on (FN + right shift)
+    volatile uint8_t flag_config_changed;      // flag to indicate that the configuration has changed through I2C
+    volatile uint8_t flag_slave_first_write;   // set on every ADDR phase; the next RXNE byte is the register offset
+    uint8_t matrix_state[N_COLS];              // current matrix state
     uint8_t slave_offset;                 // register offset captured after the most recent ADDR+W
     uint8_t slave_position;              // current read/write cursor, reset to offset on every ADDR
+    uint8_t unused;                            // padding: the backlight value must be halfword aligned
     union
     {
         addon_data_t data;
@@ -144,8 +158,19 @@ typedef struct
     };
 } addon_state_t;
 
-/* Global Variables */
-static addon_state_t state;
+/* The DMA copies the backlight value to the timer as a halfword: keep it aligned */
+_Static_assert(offsetof(addon_state_t, data.backlight) % 2 == 0, "backlight is not halfword aligned!");
+
+/* Global Variables. Aligned: the DMA reads the backlight value as a halfword. */
+static addon_state_t state __attribute__((aligned(4)));
+
+/*
+ * Copy of the read-only registers (version, key report), taken at the start of
+ * every I2C read. The main loop updates the key report between the bytes of a
+ * read: without the copy, a read could return the modifiers of one report and
+ * the keys of the next.
+ */
+static uint8_t i2c_snapshot[RESULT_CONFIG_OFFSET];
 
 /* initialize timer 3 to periodically generate an interrupt */
 static void TIM3_Init(uint16_t arr, uint16_t psc)
@@ -523,7 +548,6 @@ static void KB_Scan(void)
     {
         /* Save the first scan result */
         scan = io_to_scan_result(GPIO_ReadInputData(GPIOB));
-        state.flag_int_should_clear = 1;
     }
 }
 
@@ -608,8 +632,11 @@ static void determine_hid_report(uint8_t keycode, uint8_t is_modifier, uint8_t p
 /* toggle the backlight on or off */
 static void toggle_backlight(void)
 {
-    state.data.backlight -= state.data.backlight % 20;
-    state.data.backlight = (state.data.backlight + 20) % 120;
+    uint16_t backlight = state.data.backlight;
+
+    /* one store: the DMA and I2C must not see the value in between */
+    backlight -= backlight % 20;
+    state.data.backlight = (backlight + 20) % 120;
 }
 
 static void handle_fn(key_report_t *in, key_report_t *out)
@@ -697,21 +724,24 @@ static void USART_Output_Init(uint32_t baudrate)
 
     USART_Init(UART, &USART_InitStructure);
     USART_Cmd(UART, ENABLE);
-    state.flag_uart_enabled = 1;
 }
 
-/* disable UART1 and tri-state its pins so they do not interfere with signaling */
-static void USART_Output_DeInit(void)
+/* shut the speaker amplifier down (SD_MODE low) or release SD_MODE (amplifier on) */
+static void Amp_Shutdown(uint8_t shutdown)
 {
     GPIO_InitTypeDef GPIO_InitStructure = {0};
 
-    state.flag_uart_enabled = 0;
-    USART_Cmd(UART, DISABLE);
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOC, ENABLE);
+    /*
+     * GPIO_Init() sets the mode only: an output drives the level in OUTDR,
+     * which must be low (its reset value, but do not depend on that).
+     */
+    GPIO_WriteBit(AMP_SD_PORT, AMP_SD_PIN, Bit_RESET);
 
-    GPIO_InitStructure.GPIO_Pin = UART_TX_PIN | UART_RX_PIN;
+    GPIO_InitStructure.GPIO_Pin = AMP_SD_PIN;
+    GPIO_InitStructure.GPIO_Mode = shutdown ? GPIO_Mode_Out_PP : GPIO_Mode_IN_FLOATING;
     GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
-    GPIO_InitStructure.GPIO_Mode = GPIO_Mode_IN_FLOATING;
-    GPIO_Init(UART_PORT, &GPIO_InitStructure);
+    GPIO_Init(AMP_SD_PORT, &GPIO_InitStructure);
 }
 
 static int i2c_pos_is_writable(uint8_t pos)
@@ -776,7 +806,17 @@ static void i2c_slave_process(void)
 
     if (flag1 & I2C_STAR1_TXE)
     {
-        if (state.slave_position < RESULT_BUFFER_SIZE)
+        /* first byte of a read: take a consistent copy of the read-only registers */
+        if (state.slave_position == state.slave_offset)
+        {
+            memcpy(i2c_snapshot, state.raw_data, RESULT_CONFIG_OFFSET);
+        }
+
+        if (state.slave_position < RESULT_CONFIG_OFFSET)
+        {
+            I2C_SendData(I2C1, i2c_snapshot[state.slave_position++]);
+        }
+        else if (state.slave_position < RESULT_BUFFER_SIZE)
         {
             I2C_SendData(I2C1, state.raw_data[state.slave_position++]);
         }
@@ -836,6 +876,7 @@ int main(void)
 {
     uint8_t previous_matrix_state[N_COLS];
     key_report_t key_report;
+    key_report_t report;
     uint8_t previous_c = 200;
 
     memset(previous_matrix_state, 0, N_COLS);
@@ -861,6 +902,9 @@ int main(void)
     SystemCoreClockUpdate();
     Delay_Init();
 
+    /* UART1 is always on: the key reports in release builds, the debug output in debug builds */
+    USART_Output_Init(UART_BAUDRATE);
+
     /* makes sure that we can still flash using SWD */
     Delay_Ms(1000);
 
@@ -877,6 +921,9 @@ int main(void)
     TIM_Cmd(BACKLIGHT_TIM, ENABLE);
     TIM_CtrlPWMOutputs(BACKLIGHT_TIM, ENABLE);
 
+    /* the speaker amplifier stays on until the badge shuts it down */
+    Amp_Shutdown(0);
+
     /* Initialize GPIO for keyboard scan */
     KB_Scan_Init();
     // KB_Sleep_Wakeup_Cfg();
@@ -892,19 +939,9 @@ int main(void)
     /* set the keyboard backlight off */
     state.data.backlight = 0;
 
-    /* UART output is enabled by default; can be disabled through I2C configuration */
-    state.data.enable_uart_output = 1;
-    state.flag_uart_enabled = 0;
-    state.flag_config_changed = 1;
 
     while (1)
     {
-        if (state.flag_button_scan_halfway && state.data.enable_int)
-        {
-            state.flag_button_scan_halfway = 0;
-            // TODO: set interrupt pin low
-        }
-
         if (state.flag_matrix_scan_done)
         {
             state.flag_matrix_scan_done = 0;
@@ -938,32 +975,33 @@ int main(void)
                 memcpy(previous_matrix_state, state.matrix_state, N_COLS);
 
                 /* handle special FN triggers */
-                handle_fn(&key_report, &state.data.key_report);
+                handle_fn(&key_report, &report);
 
-                /* the key report is ready to be fetched through I2C, so let's set the interrupt */
-                if (state.data.enable_int)
-                {
-                    // TODO: set the UART TX to high
-                    PRINT("TODO: set the output pin\r\n");
-                }
-                else if (state.flag_uart_enabled)
-                {
+                /* publish the report at once: the I2C interrupt must not see half of it */
+                NVIC_DisableIRQ(I2C1_EV_IRQn);
+                state.data.key_report = report;
+                NVIC_EnableIRQ(I2C1_EV_IRQn);
+
+                /*
+                 * Send the key report over the UART: a badge that reads the
+                 * keyboard over I2C can use it as the trigger for its reads.
+                 * Debug builds use the UART for their debug output instead.
+                 */
 #if (DEBUG)
-                    PRINT("Reporting HID through UART:\r\n");
-                    for (int i = 0; i < sizeof(key_report_t); i++)
-                    {
-                        PRINT("0x%02x ", state.raw_data[RESULT_KB_OFFSET + i]);
-                    }
-                    PRINT("\r\n");
-#else
-                    for (int i = 0; i < sizeof(key_report_t); i++)
-                    {
-                        while (USART_GetFlagStatus(UART, USART_FLAG_TC) == RESET)
-                            ;
-                        USART_SendData(UART, state.raw_data[RESULT_KB_OFFSET + i]);
-                    }
-#endif
+                PRINT("Reporting HID through UART:\r\n");
+                for (int i = 0; i < sizeof(key_report_t); i++)
+                {
+                    PRINT("0x%02x ", state.raw_data[RESULT_KB_OFFSET + i]);
                 }
+                PRINT("\r\n");
+#else
+                for (int i = 0; i < sizeof(key_report_t); i++)
+                {
+                    while (USART_GetFlagStatus(UART, USART_FLAG_TC) == RESET)
+                        ;
+                    USART_SendData(UART, state.raw_data[RESULT_KB_OFFSET + i]);
+                }
+#endif
 
                 USB_write(&state.raw_data[RESULT_KB_OFFSET], sizeof(key_report_t));
             }
@@ -986,8 +1024,8 @@ int main(void)
             }
         }
 
-        /* I2C master wrote a new value to the outputs register: apply it now.
-         * Also handles the reboot-to-bootloader command if that bit is set.
+        /* I2C master wrote a new value to the configuration register: apply it now
+         * (reboot to bootloader, remap, amplifier shutdown, UART output).
          */
         if (state.flag_config_changed)
         {
@@ -1012,14 +1050,7 @@ int main(void)
                 /* Re-enable DIO (SWD) interface on these pins */
                 GPIO_PinRemapConfig(GPIO_Remap_SWJ_Disable, DISABLE);
             }
-            if (state.data.enable_uart_output)
-            {
-                USART_Output_Init(UART_BAUDRATE);
-            }
-            else
-            {
-                USART_Output_DeInit();
-            }
+            Amp_Shutdown(state.data.amp_shutdown);
         }
     }
 }

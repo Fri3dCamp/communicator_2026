@@ -21,11 +21,15 @@ A HID report packet ([Protocol 1](https://www.usb.org/sites/default/files/hid1_1
 
 The second byte is reserved, the remaining 6 bytes can contain a [HID keycode](https://gist.github.com/MightyPork/6da26e382a7ad91b5496ee55fdc73db2).
 
+The report is sent on the UART on every change of the keys, so a badge that reads the keyboard over I2C can use the
+incoming UART data as a trigger to read it, instead of polling. The UART output is always on in release builds (debug
+builds use the UART for their debug output).
+
 On the 2026 communicator, UART RX is also connected to the expansion connector. This means the badge firmware can send a byte to control the backlight of the 2026 communicator. The byte should set a value between 0 and 100.
 
 ### I2C
 
-The Fri3d badge [2024](https://github.com/Fri3dCamp/badge_2024) and [2026](https://github.com/Fri3dCamp/badge_2026) can also communicate with the 2026 communicator add-on through I2C (address ```0x40```). The following registers can be used to interface/control with the add-on:
+The Fri3d badge [2024](https://github.com/Fri3dCamp/badge_2024) and [2026](https://github.com/Fri3dCamp/badge_2026) can also communicate with the 2026 communicator add-on through I2C (address ```0x39```). The following registers can be used to interface/control with the add-on:
 
 | Register | Name | Access | Bytes | description |
 |-|-|-|-|-|
@@ -35,11 +39,13 @@ The Fri3d badge [2024](https://github.com/Fri3dCamp/badge_2024) and [2026](https
 | 0x0c | Backlight | R/W | 2 | Keyboard backlight intensity (0-100) |
 
 The configuration is a 1-byte value with the following encoding:
-| Bit | Name |
-|-|-|
-| \[7:2\] | reserved |
-| 1 | reboot to bootloader |
-| 0 | enable interrupt mode (not implemented yet) |
+
+| Bit | Name | Default | Description |
+|-|-|-|-|
+| \[7:3\] | reserved | 0 | |
+| 2 | amplifier shutdown | 0 | Write 1 to shut the speaker amplifier down (its SD_MODE pin low), 0 to turn it on again. Revision 01 and later; on revision 00 the pin is not connected |
+| 1 | remap | 0 | Write 1 to disable I2C and give its pins back to SWD, so the add-on can be reflashed |
+| 0 | reboot | 0 | Write 1 to reboot into the bootloader |
 
 ## Building
 
