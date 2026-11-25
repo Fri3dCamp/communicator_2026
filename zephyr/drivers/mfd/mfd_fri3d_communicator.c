@@ -8,12 +8,12 @@
  * it sends on its UART on every change, as one burst without framing (a pause
  * starts a new report; byte 1 is reserved and 0). With
  * CONFIG_MFD_FRI3D_COMMUNICATOR_UPDATE its firmware can be updated over
- * RVSWD (mfd_fri3d_communicator_update.c).
+ * RVSWD (mfd_fri3d_communicator_update.c); the shell commands are in
+ * mfd_fri3d_communicator_shell.c.
  */
 
 #define DT_DRV_COMPAT fri3d_communicator_2026
 
-#include <stdlib.h>
 #include <string.h>
 
 #include <zephyr/drivers/gpio.h>
@@ -243,53 +243,3 @@ static int mfd_fri3d_communicator_init(const struct device *dev)
 			      CONFIG_MFD_FRI3D_COMMUNICATOR_INIT_PRIORITY, NULL);
 
 DT_INST_FOREACH_STATUS_OKAY(MFD_FRI3D_COMMUNICATOR_DEFINE)
-
-#if defined(CONFIG_SHELL)
-#include <zephyr/shell/shell.h>
-
-static const struct device *const shell_communicator = DEVICE_DT_INST_GET(0);
-
-static int cmd_communicator_status(const struct shell *sh, size_t argc, char **argv)
-{
-	struct mfd_fri3d_communicator_stats st;
-	uint8_t version[3];
-	uint8_t cfg;
-
-	mfd_fri3d_communicator_get_version(shell_communicator, version);
-	mfd_fri3d_communicator_get_stats(shell_communicator, &st);
-	shell_print(sh, "firmware v%u.%u.%u", version[0], version[1], version[2]);
-	if (mfd_fri3d_communicator_reg_read(shell_communicator, FRI3D_COMMUNICATOR_REG_CONFIG, &cfg,
-					    1) == 0) {
-		shell_print(sh, "configuration 0x%02x", cfg);
-	}
-	shell_print(sh, "UART %u bytes, %u key reports, %u dropped", st.uart_bytes, st.reports,
-		    st.dropped);
-
-	return 0;
-}
-
-static int cmd_communicator_backlight(const struct shell *sh, size_t argc, char **argv)
-{
-	int percent = atoi(argv[1]);
-	int ret;
-
-	if (percent < 0 || percent > 100) {
-		shell_error(sh, "0-100");
-		return -EINVAL;
-	}
-	ret = mfd_fri3d_communicator_set_backlight(shell_communicator, (uint8_t)percent);
-	if (ret != 0) {
-		shell_error(sh, "failed: %d", ret);
-	}
-	return ret;
-}
-
-
-SHELL_SUBCMD_SET_CREATE(sub_communicator, (communicator));
-SHELL_CMD_REGISTER(communicator, &sub_communicator, "Communicator add-on", NULL);
-
-SHELL_SUBCMD_ADD((communicator), status, NULL, "Firmware version, configuration and counters",
-		 cmd_communicator_status, 1, 0);
-SHELL_SUBCMD_ADD((communicator), backlight, NULL, "Keyboard backlight: backlight <0-100>",
-		 cmd_communicator_backlight, 2, 0);
-#endif /* CONFIG_SHELL */

@@ -65,4 +65,21 @@ int mfd_fri3d_communicator_wait(const struct device *dev, k_timepoint_t timeout)
  */
 int mfd_fri3d_communicator_update_at_boot(const struct device *dev, int answered);
 
+/* What the update code holds, for the shell (CONFIG_MFD_FRI3D_COMMUNICATOR_UPDATE) */
+struct mfd_fri3d_communicator_update_info {
+	/* bundled image (CONFIG_MFD_FRI3D_COMMUNICATOR_FIRMWARE): size, 0 without one */
+	size_t bundled_len;
+	uint8_t bundled_version[3];
+	/* successful updates since boot */
+	unsigned int updates;
+	/* the update at boot installed the bundled image */
+	bool updated_at_boot;
+};
+
+void mfd_fri3d_communicator_get_update_info(struct mfd_fri3d_communicator_update_info *info);
+
+/* Install the bundled image: -ENOENT without one */
+int mfd_fri3d_communicator_update_bundled(const struct device *dev,
+					  mfd_fri3d_communicator_progress_cb_t cb, void *user_data);
+
 #endif /* ZEPHYR_DRIVERS_MFD_MFD_FRI3D_COMMUNICATOR_PRIV_H_ */

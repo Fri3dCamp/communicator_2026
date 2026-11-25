@@ -24,6 +24,15 @@ config MFD_FRI3D_COMMUNICATOR_INIT_PRIORITY
 	help
 	  Must be after the I2C controller and the UART.
 
+config MFD_FRI3D_COMMUNICATOR_SHELL
+	bool "Communicator shell commands"
+	default y
+	depends on SHELL
+	help
+	  The "communicator" shell command: status, keyboard backlight, and
+	  with a bundled image (MFD_FRI3D_COMMUNICATOR_FIRMWARE) its
+	  installation.
+
 config MFD_FRI3D_COMMUNICATOR_UPDATE
 	bool "Communicator firmware update over RVSWD"
 	help

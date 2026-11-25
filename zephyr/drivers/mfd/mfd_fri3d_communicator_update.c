@@ -6,8 +6,7 @@
  * Firmware update of the Fri3d Camp 2026 communicator's keyboard controller
  * over RVSWD (CONFIG_MFD_FRI3D_COMMUNICATOR_UPDATE): it gives its I2C pins to
  * SWD on request (remap bit), the zephyr-rvswd module programs it, and the
- * pins go back to I2C. Also the bundled image, its installation at boot and the
- * shell.
+ * pins go back to I2C. Also the bundled image and its installation at boot.
  */
 
 #define DT_DRV_COMPAT fri3d_communicator_2026
@@ -28,8 +27,9 @@ LOG_MODULE_DECLARE(mfd_fri3d_communicator, CONFIG_MFD_LOG_LEVEL);
 /* After the reset into the new firmware: I2C starts after one second */
 #define RESTART_TIMEOUT_MS 4000
 
-/* successful updates since boot (for the shell) */
+/* successful updates since boot, and whether the one at boot was one (for the shell) */
 static unsigned int mfd_fri3d_communicator_updates;
+static bool mfd_fri3d_communicator_updated_at_boot;
 
 static int mfd_fri3d_communicator_program(const struct device *dev, const void *image, size_t len,
 					  mfd_fri3d_communicator_progress_cb_t cb,
@@ -133,9 +133,6 @@ void mfd_fri3d_communicator_set_update_callbacks(const struct device *dev,
 }
 
 #ifdef FRI3D_COMMUNICATOR_HAS_FIRMWARE
-/* the bundled firmware was installed at boot (for the shell) */
-static bool mfd_fri3d_communicator_updated_at_boot;
-
 static const uint8_t mfd_fri3d_communicator_firmware[] = {
 #include "fri3d_communicator_firmware.inc"
 };
@@ -153,15 +150,35 @@ static void mfd_fri3d_communicator_bundled_version(uint8_t version[3])
 	}
 }
 
-static int mfd_fri3d_communicator_update_bundled(const struct device *dev,
-						 mfd_fri3d_communicator_progress_cb_t cb,
-						 void *user_data)
+#endif /* FRI3D_COMMUNICATOR_HAS_FIRMWARE */
+
+int mfd_fri3d_communicator_update_bundled(const struct device *dev,
+					  mfd_fri3d_communicator_progress_cb_t cb, void *user_data)
 {
+#ifdef FRI3D_COMMUNICATOR_HAS_FIRMWARE
 	return mfd_fri3d_communicator_update(dev, mfd_fri3d_communicator_firmware,
 					     sizeof(mfd_fri3d_communicator_firmware), cb,
 					     user_data);
+#else
+	ARG_UNUSED(dev);
+	ARG_UNUSED(cb);
+	ARG_UNUSED(user_data);
+
+	return -ENOENT;
+#endif
 }
-#endif /* FRI3D_COMMUNICATOR_HAS_FIRMWARE */
+
+void mfd_fri3d_communicator_get_update_info(struct mfd_fri3d_communicator_update_info *info)
+{
+	*info = (struct mfd_fri3d_communicator_update_info){
+		.updates = mfd_fri3d_communicator_updates,
+		.updated_at_boot = mfd_fri3d_communicator_updated_at_boot,
+	};
+#ifdef FRI3D_COMMUNICATOR_HAS_FIRMWARE
+	info->bundled_len = sizeof(mfd_fri3d_communicator_firmware);
+	mfd_fri3d_communicator_bundled_version(info->bundled_version);
+#endif
+}
 
 #ifdef CONFIG_MFD_FRI3D_COMMUNICATOR_UPDATE_AT_BOOT
 /*
@@ -202,64 +219,3 @@ int mfd_fri3d_communicator_update_at_boot(const struct device *dev, int answered
 #endif
 }
 #endif /* CONFIG_MFD_FRI3D_COMMUNICATOR_UPDATE_AT_BOOT */
-
-#if defined(CONFIG_SHELL) && defined(FRI3D_COMMUNICATOR_HAS_FIRMWARE)
-#include <zephyr/shell/shell.h>
-
-static const struct device *const shell_communicator = DEVICE_DT_INST_GET(0);
-
-static void mfd_fri3d_communicator_shell_progress(size_t done, size_t total, void *user_data)
-{
-	const struct shell *sh = user_data;
-
-	/* every 25 % */
-	if (done == total || (done * 4 / total) != ((done + 256) * 4 / total)) {
-		shell_print(sh, "  %u %%", (unsigned int)(done * 100 / total));
-	}
-}
-
-static int cmd_communicator_firmware(const struct shell *sh, size_t argc, char **argv)
-{
-	uint8_t version[3], bundled[3];
-
-	ARG_UNUSED(argc);
-	ARG_UNUSED(argv);
-
-	mfd_fri3d_communicator_get_version(shell_communicator, version);
-	mfd_fri3d_communicator_bundled_version(bundled);
-	shell_print(sh, "communicator firmware v%u.%u.%u, bundled v%u.%u.%u (%u bytes)%s, "
-		    "updates since boot: %u",
-		    version[0], version[1], version[2], bundled[0], bundled[1], bundled[2],
-		    (unsigned int)sizeof(mfd_fri3d_communicator_firmware),
-		    mfd_fri3d_communicator_updated_at_boot ? ", installed at boot" : "",
-		    mfd_fri3d_communicator_updates);
-
-	return 0;
-}
-
-static int cmd_communicator_update(const struct shell *sh, size_t argc, char **argv)
-{
-	int ret;
-
-	ARG_UNUSED(argc);
-	ARG_UNUSED(argv);
-
-	shell_print(sh, "installing the bundled communicator firmware");
-	ret = mfd_fri3d_communicator_update_bundled(shell_communicator,
-						    mfd_fri3d_communicator_shell_progress,
-						    (void *)sh);
-	if (ret != 0) {
-		shell_error(sh, "update failed: %d", ret);
-		return ret;
-	}
-
-	cmd_communicator_firmware(sh, 0, NULL);
-
-	return 0;
-}
-
-SHELL_SUBCMD_ADD((communicator), firmware, NULL, "Add-on and bundled firmware versions",
-		 cmd_communicator_firmware, 1, 0);
-SHELL_SUBCMD_ADD((communicator), update, NULL, "Install the bundled add-on firmware",
-		 cmd_communicator_update, 1, 0);
-#endif
