@@ -7,11 +7,12 @@ description: |
   the badge's expansion connector.
 
   Over I2C it has its firmware version, the current HID key report, a
-  configuration register (UART output, firmware remap to SWD, reboot to the
-  bootloader) and the keyboard backlight. On its UART (115200 baud) it sends
-  the 8-byte HID key report on every change; the driver hands those to a
-  callback. The add-on's speaker amplifier and microphone sit on the badge's
-  I2S and are not part of this device.
+  configuration register (reboot to the bootloader, firmware remap to SWD,
+  speaker amplifier shutdown) and the keyboard backlight. On its UART (115200
+  baud) it sends the 8-byte HID key report on every change; the driver hands
+  those to a callback. The add-on's speaker amplifier and microphone sit on
+  the badge's I2S and are not part of this device; the amplifier's shutdown
+  input is the configuration bit. Needs firmware v1.0.3 or later.
 
     &i2c0 {
         communicator: communicator@39 {

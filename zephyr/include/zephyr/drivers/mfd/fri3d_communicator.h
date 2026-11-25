@@ -37,17 +37,15 @@ extern "C" {
 /** Keyboard backlight, 0-100 (2 bytes, little endian) */
 #define FRI3D_COMMUNICATOR_REG_BACKLIGHT 0x0c
 
-/** @name Configuration register bits (communicator_2026 main)
+/** @name Configuration register bits (firmware v1.0.3 and later)
  * @{
  */
-/** Interrupt output instead of the UART (not implemented by the firmware) */
-#define FRI3D_COMMUNICATOR_CONFIG_INT    BIT(0)
 /** Reboot into the WCH bootloader */
-#define FRI3D_COMMUNICATOR_CONFIG_REBOOT BIT(1)
+#define FRI3D_COMMUNICATOR_CONFIG_REBOOT       BIT(0)
 /** Give the I2C pins to SWD (firmware update) */
-#define FRI3D_COMMUNICATOR_CONFIG_REMAP  BIT(2)
-/** Send the key reports on the UART (on after boot) */
-#define FRI3D_COMMUNICATOR_CONFIG_UART   BIT(3)
+#define FRI3D_COMMUNICATOR_CONFIG_REMAP        BIT(1)
+/** Shut the speaker amplifier down (communicator rev 01 and later) */
+#define FRI3D_COMMUNICATOR_CONFIG_AMP_SHUTDOWN BIT(2)
 /** @} */
 
 /** Size of a HID key report */
