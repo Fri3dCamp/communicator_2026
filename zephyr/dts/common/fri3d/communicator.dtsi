@@ -31,7 +31,5 @@
 		reg = <0x39>;
 		uart = <&uart0>;
 		rvswd = <&communicator_swd>;
-		/* the other devices on the bus are off while updating the add-on */
-		update-power-domain = <&aux_3v3>;
 	};
 };

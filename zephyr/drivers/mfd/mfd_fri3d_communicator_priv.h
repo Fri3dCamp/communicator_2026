@@ -24,26 +24,21 @@ struct mfd_fri3d_communicator_config {
 	/* UART that receives the key reports, or NULL */
 	const struct device *uart;
 	uint32_t report_gap_ms;
-	uint32_t probe_period_ms;
-	uint32_t connect_timeout_ms;
 #ifdef CONFIG_MFD_FRI3D_COMMUNICATOR_UPDATE
 	/* RVSWD interface on the add-on's I2C pins, or NULL */
 	const struct device *rvswd;
-	/* enable of the power domain of the other devices on the bus, or none */
-	struct gpio_dt_spec update_power;
 #endif
 };
 
 struct mfd_fri3d_communicator_data {
 	const struct device *dev;
-	/* looks for the add-on */
+	/* connects to the add-on */
 	struct k_work_delayable connect_work;
 	/* delivers the queued key reports */
 	struct k_work report_work;
 	struct k_msgq reports;
 	uint8_t reports_buf[REPORT_QUEUE_LEN * FRI3D_COMMUNICATOR_REPORT_SIZE];
 	bool connected;
-	k_timepoint_t connect_end;
 	/* a firmware update is running: the I2C pins are SWD */
 	bool updating;
 	/* UART receive state (interrupt) */
@@ -54,6 +49,17 @@ struct mfd_fri3d_communicator_data {
 	struct mfd_fri3d_communicator_stats stats;
 	mfd_fri3d_communicator_report_cb_t cb;
 	void *user_data;
+#ifdef CONFIG_MFD_FRI3D_COMMUNICATOR_UPDATE
+	mfd_fri3d_communicator_pre_update_cb_t pre_update;
+	mfd_fri3d_communicator_post_update_cb_t post_update;
+	void *update_user_data;
+#endif
 };
+
+/*
+ * The add-on's firmware answers on I2C shortly after it powers up: the driver
+ * connects to it once this long after boot, and after an update.
+ */
+#define MFD_FRI3D_COMMUNICATOR_START_MS 1500
 
 #endif /* ZEPHYR_DRIVERS_MFD_MFD_FRI3D_COMMUNICATOR_PRIV_H_ */

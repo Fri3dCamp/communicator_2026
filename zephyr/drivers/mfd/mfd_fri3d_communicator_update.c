@@ -24,8 +24,6 @@ LOG_MODULE_DECLARE(mfd_fri3d_communicator, CONFIG_MFD_LOG_LEVEL);
 
 /* Delay for the add-on to give its I2C pins to SWD after the remap command */
 #define REMAP_DELAY_MS 200
-/* Time for the other devices on the bus to power down and up */
-#define POWER_DELAY_MS 50
 /* Debug module status register: answers when a target is there */
 #define DMSTATUS       0x11
 
@@ -66,8 +64,7 @@ int mfd_fri3d_communicator_update(const struct device *dev, const void *image, s
 	if (config->rvswd == NULL) {
 		return -ENOTSUP;
 	}
-	if (!device_is_ready(config->rvswd) ||
-	    (config->update_power.port != NULL && !gpio_is_ready_dt(&config->update_power))) {
+	if (!device_is_ready(config->rvswd)) {
 		return -ENODEV;
 	}
 
@@ -81,14 +78,9 @@ int mfd_fri3d_communicator_update(const struct device *dev, const void *image, s
 	}
 	data->updating = true;
 
-	/*
-	 * The other devices on the bus must not see the SWD traffic (it starts
-	 * like an I2C start condition): switch them off. After the remap
-	 * command: the bus pull-ups are on that rail too.
-	 */
-	if (config->update_power.port != NULL) {
-		gpio_pin_set_dt(&config->update_power, 0);
-		k_msleep(POWER_DELAY_MS);
+	/* the application keeps what must not see the SWD traffic away from it */
+	if (data->pre_update != NULL) {
+		data->pre_update(dev, data->update_user_data);
 	}
 
 	ret = mfd_fri3d_communicator_find(config->rvswd, wait, vendor);
@@ -113,17 +105,28 @@ int mfd_fri3d_communicator_update(const struct device *dev, const void *image, s
 		}
 	}
 
-	/* the pins go back to I2C; the firmware answers again shortly after it starts */
+	/* the pins go back to I2C */
 	rvswd_disconnect(config->rvswd);
-	if (config->update_power.port != NULL) {
-		gpio_pin_set_dt(&config->update_power, 1);
-		k_msleep(POWER_DELAY_MS);
+	if (data->post_update != NULL) {
+		data->post_update(dev, ret, data->update_user_data);
 	}
 	data->updating = false;
-	data->connect_end = sys_timepoint_calc(K_MSEC(config->connect_timeout_ms));
-	k_work_reschedule(&data->connect_work, K_NO_WAIT);
+	/* connect again once the firmware is up */
+	k_work_reschedule(&data->connect_work, K_MSEC(MFD_FRI3D_COMMUNICATOR_START_MS));
 
 	return ret;
+}
+
+void mfd_fri3d_communicator_set_update_callbacks(const struct device *dev,
+						 mfd_fri3d_communicator_pre_update_cb_t pre,
+						 mfd_fri3d_communicator_post_update_cb_t post,
+						 void *user_data)
+{
+	struct mfd_fri3d_communicator_data *data = dev->data;
+
+	data->pre_update = pre;
+	data->post_update = post;
+	data->update_user_data = user_data;
 }
 
 #if defined(CONFIG_SHELL) && defined(FRI3D_COMMUNICATOR_HAS_FIRMWARE)
@@ -160,7 +163,7 @@ static int cmd_communicator_update(const struct shell *sh, size_t argc, char **a
 	if (ret != 0) {
 		shell_error(sh, "update failed: %d", ret);
 	} else {
-		shell_print(sh, "done; restart the badge (the other devices on the bus were off)");
+		shell_print(sh, "done");
 	}
 	return ret;
 }

@@ -141,17 +141,13 @@ static void mfd_fri3d_communicator_connect_work(struct k_work *work)
 	struct mfd_fri3d_communicator_data *data =
 		CONTAINER_OF(dwork, struct mfd_fri3d_communicator_data, connect_work);
 	const struct device *dev = data->dev;
-	const struct mfd_fri3d_communicator_config *config = dev->config;
 
 	if (data->updating || data->connected) {
 		return;
 	}
+	/* the devicetree says there is an add-on: no answer is an error */
 	if (mfd_fri3d_communicator_connect(dev) != 0) {
-		if (sys_timepoint_expired(data->connect_end)) {
-			LOG_INF("%s: no communicator", dev->name);
-		} else {
-			k_work_reschedule(dwork, K_MSEC(config->probe_period_ms));
-		}
+		LOG_ERR("%s: no answer from the communicator", dev->name);
 	}
 }
 
@@ -232,9 +228,8 @@ static int mfd_fri3d_communicator_init(const struct device *dev)
 #endif
 	}
 
-	/* look for the add-on from the work queue: it may not be connected */
-	data->connect_end = sys_timepoint_calc(K_MSEC(config->connect_timeout_ms));
-	k_work_schedule(&data->connect_work, K_NO_WAIT);
+	/* connect from the work queue, once the add-on's firmware is up */
+	k_work_schedule(&data->connect_work, K_TIMEOUT_ABS_MS(MFD_FRI3D_COMMUNICATOR_START_MS));
 
 	return 0;
 }
@@ -245,17 +240,10 @@ static int mfd_fri3d_communicator_init(const struct device *dev)
 		.uart = COND_CODE_1(DT_INST_NODE_HAS_PROP(inst, uart),                             \
 				    (DEVICE_DT_GET(DT_INST_PHANDLE(inst, uart))), (NULL)),         \
 		.report_gap_ms = DT_INST_PROP(inst, report_gap_ms),                                \
-		.probe_period_ms = DT_INST_PROP(inst, probe_period_ms),                            \
-		.connect_timeout_ms = DT_INST_PROP(inst, connect_timeout_ms),                      \
 		IF_ENABLED(CONFIG_MFD_FRI3D_COMMUNICATOR_UPDATE,                                   \
 			   (.rvswd = COND_CODE_1(DT_INST_NODE_HAS_PROP(inst, rvswd),               \
 						 (DEVICE_DT_GET(DT_INST_PHANDLE(inst, rvswd))),     \
-						 (NULL)),                                           \
-			    .update_power = COND_CODE_1(                                           \
-				    DT_INST_NODE_HAS_PROP(inst, update_power_domain),              \
-				    (GPIO_DT_SPEC_GET(DT_INST_PHANDLE(inst, update_power_domain),  \
-						      enable_gpios)),                              \
-				    ({0})),))                                                      \
+						 (NULL)),))                                        \
 	};                                                                                         \
                                                                                                    \
 	static struct mfd_fri3d_communicator_data mfd_fri3d_communicator_data##inst;               \

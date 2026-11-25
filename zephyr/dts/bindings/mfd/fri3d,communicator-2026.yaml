@@ -38,14 +38,6 @@ properties:
       RVSWD interface (wch,rvswd) on the add-on's I2C pins (the expansion I2C
       bus), to update its firmware (CONFIG_MFD_FRI3D_COMMUNICATOR_UPDATE).
 
-  update-power-domain:
-    type: phandle
-    description: |
-      Power domain (power-domain-gpio) of the other devices on the expansion
-      I2C bus, 3V3_AUX on the badge. It is switched off while the add-on is
-      updated, so they do not see the SWD traffic. Their drivers are not
-      initialized again afterwards: restart.
-
   report-gap-ms:
     type: int
     default: 2
@@ -53,13 +45,3 @@ properties:
       A pause of more than this between two UART bytes starts a new key
       report: the add-on sends a report as one burst (0.7 ms) without
       framing.
-
-  probe-period-ms:
-    type: int
-    default: 500
-    description: Period to look for the add-on after boot and after an update.
-
-  connect-timeout-ms:
-    type: int
-    default: 3000
-    description: How long to look for the add-on after boot and after an update.
