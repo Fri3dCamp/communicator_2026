@@ -93,10 +93,11 @@
  * 1 byte: right encoder value
  * 3 * LEDS_NUM bytes: red, green, blue value for each LED
  * */
-#define RESULT_BUFFER_SIZE      (3 + 8 + 1 + 2)
+#define RESULT_BUFFER_SIZE      (3 + 8 + 1 + 2 + N_COLS)
 #define RESULT_KB_OFFSET        (3)
 #define RESULT_CONFIG_OFFSET    (RESULT_KB_OFFSET + 8)
 #define RESULT_BACKLIGHT_OFFSET (RESULT_CONFIG_OFFSET + 1)
+#define RESULT_MATRIX_OFFSET    (RESULT_BACKLIGHT_OFFSET + 2)
 
 #define HID_REPORT_KEYS (6)
 
@@ -130,6 +131,7 @@ typedef struct __attribute__((packed))
     uint8_t amp_shutdown : 1; // write 1 to shut the speaker amplifier down (rev 01 and later)
     uint8_t reserved : 5;     // reserved
     uint16_t backlight;      // backlight PWM value
+    uint8_t matrix_state[N_COLS]; // key matrix of the published key report: bit r of byte c = row r of column c pressed
 } addon_data_t;
 
 _Static_assert(sizeof(addon_data_t) == RESULT_BUFFER_SIZE, "raw data and struct size are not aligned!");
@@ -165,12 +167,13 @@ _Static_assert(offsetof(addon_state_t, data.backlight) % 2 == 0, "backlight is n
 static addon_state_t state __attribute__((aligned(4)));
 
 /*
- * Copy of the read-only registers (version, key report), taken at the start of
- * every I2C read. The main loop updates the key report between the bytes of a
- * read: without the copy, a read could return the modifiers of one report and
- * the keys of the next.
+ * Copy of the registers, taken at the start of every I2C read; the read-only
+ * ones (version, key report, key matrix) are sent from it. The main loop
+ * updates the key report and the matrix between the bytes of a read: without
+ * the copy, a read could return the modifiers of one report and the keys of
+ * the next.
  */
-static uint8_t i2c_snapshot[RESULT_CONFIG_OFFSET];
+static uint8_t i2c_snapshot[RESULT_BUFFER_SIZE];
 
 /* initialize timer 3 to periodically generate an interrupt */
 static void TIM3_Init(uint16_t arr, uint16_t psc)
@@ -809,10 +812,10 @@ static void i2c_slave_process(void)
         /* first byte of a read: take a consistent copy of the read-only registers */
         if (state.slave_position == state.slave_offset)
         {
-            memcpy(i2c_snapshot, state.raw_data, RESULT_CONFIG_OFFSET);
+            memcpy(i2c_snapshot, state.raw_data, RESULT_BUFFER_SIZE);
         }
 
-        if (state.slave_position < RESULT_CONFIG_OFFSET)
+        if (state.slave_position < RESULT_BUFFER_SIZE && !i2c_pos_is_writable(state.slave_position))
         {
             I2C_SendData(I2C1, i2c_snapshot[state.slave_position++]);
         }
@@ -977,9 +980,10 @@ int main(void)
                 /* handle special FN triggers */
                 handle_fn(&key_report, &report);
 
-                /* publish the report at once: the I2C interrupt must not see half of it */
+                /* publish the report and its matrix at once: the I2C interrupt must not see half of it */
                 NVIC_DisableIRQ(I2C1_EV_IRQn);
                 state.data.key_report = report;
+                memcpy(state.data.matrix_state, previous_matrix_state, N_COLS);
                 NVIC_EnableIRQ(I2C1_EV_IRQn);
 
                 /*
