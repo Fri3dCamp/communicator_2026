@@ -9,10 +9,9 @@ description: |
   group (the sync flag on the last). A child node of the
   fri3d,communicator-2026 node, see <fri3d/communicator.dtsi>.
 
-  The Fn key is INPUT_KEY_RIGHTMETA, as in the add-on's firmware; its Fn
-  layer (Delete, Home, End, Page Up/Down, Caps Lock) is the application's
-  business here. Keys on more than one switch (the space bar) are reported
-  once.
+  The firmware keeps its FN key and the FN combinations (backlight, Delete,
+  Home/End, Page Up/Down, Caps Lock) out of the matrix, so they are not
+  reported. Keys on more than one switch (the space bar) are reported once.
 
 compatible: "fri3d,communicator-2026-input"
 
