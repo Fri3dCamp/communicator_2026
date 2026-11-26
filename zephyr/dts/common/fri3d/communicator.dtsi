@@ -34,11 +34,7 @@
 		uart = <&uart0>;
 		rvswd = <&communicator_swd>;
 
-		/*
-		 * The keyboard as input events (with CONFIG_INPUT), the add-on
-		 * firmware's layout. No FN key (row 3, column 7): the firmware
-		 * keeps FN and its combinations out of the matrix.
-		 */
+		/* the keyboard as input events (with CONFIG_INPUT), the add-on firmware's layout */
 		communicator_input: input {
 			compatible = "fri3d,communicator-2026-input";
 			keymap = <MATRIX_KEY(0, 0, INPUT_KEY_ESC)

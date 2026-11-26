@@ -9,9 +9,7 @@ description: |
   group (the sync flag on the last). A child node of the
   fri3d,communicator-2026 node, see <fri3d/communicator.dtsi>.
 
-  The firmware keeps its FN key and the FN combinations (backlight, Delete,
-  Home/End, Page Up/Down, Caps Lock) out of the matrix, so they are not
-  reported. Keys on more than one switch (the space bar) are reported once.
+  Keys on more than one switch (the space bar) are reported once.
 
 compatible: "fri3d,communicator-2026-input"
 
