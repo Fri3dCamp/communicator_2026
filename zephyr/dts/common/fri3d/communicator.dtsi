@@ -34,7 +34,10 @@
 		uart = <&uart0>;
 		rvswd = <&communicator_swd>;
 
-		/* the keyboard as input events (with CONFIG_INPUT), the add-on firmware's layout */
+		/*
+		 * The keyboard as input events (with CONFIG_INPUT), the add-on
+		 * firmware's layout. Row 3, column 7 is caps lock (Fn + Right Shift).
+		 */
 		communicator_input: input {
 			compatible = "fri3d,communicator-2026-input";
 			keymap = <MATRIX_KEY(0, 0, INPUT_KEY_ESC)
@@ -71,6 +74,7 @@
 				  MATRIX_KEY(3, 4, INPUT_KEY_P)
 				  MATRIX_KEY(3, 5, INPUT_KEY_LEFTBRACE)
 				  MATRIX_KEY(3, 6, INPUT_KEY_RIGHTBRACE)
+				  MATRIX_KEY(3, 7, INPUT_KEY_CAPSLOCK)
 				  MATRIX_KEY(3, 8, INPUT_KEY_A)
 				  MATRIX_KEY(4, 0, INPUT_KEY_S)
 				  MATRIX_KEY(4, 1, INPUT_KEY_D)
