@@ -129,6 +129,10 @@ void mfd_fri3d_communicator_get_version(const struct device *dev, uint8_t versio
 /**
  * @brief Set the key report callback (one per device).
  *
+ * The input driver (fri3d,communicator-2026-input, the MFD's child node) takes
+ * it to turn the reports into input events: applications use those (input
+ * API) rather than this callback.
+ *
  * @param dev MFD device.
  * @param cb Callback, or NULL.
  * @param user_data Passed to the callback.

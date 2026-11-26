@@ -31,5 +31,10 @@
 		reg = <0x39>;
 		uart = <&uart0>;
 		rvswd = <&communicator_swd>;
+
+		/* the keyboard as input events (with CONFIG_INPUT) */
+		communicator_input: input {
+			compatible = "fri3d,communicator-2026-input";
+		};
 	};
 };

@@ -1,0 +1,13 @@
+# Copyright (c) 2026 Bert Outtier <outtierbert@gmail.com>
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Keyboard of the Fri3d Camp 2026 communicator add-on as input events: every
+  key and modifier (Shift, Ctrl, Alt, GUI) as INPUT_EV_KEY with Zephyr's key
+  codes (INPUT_KEY_A, INPUT_KEY_LEFTSHIFT, ...), from the HID key reports of
+  the communicator's MFD. A child node of the fri3d,communicator-2026 node,
+  see <fri3d/communicator.dtsi>.
+
+compatible: "fri3d,communicator-2026-input"
+
+include: base.yaml
