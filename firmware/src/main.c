@@ -93,10 +93,11 @@
  * 1 byte: right encoder value
  * 3 * LEDS_NUM bytes: red, green, blue value for each LED
  * */
-#define RESULT_BUFFER_SIZE      (3 + 8 + 1 + 2)
+#define RESULT_BUFFER_SIZE      (3 + 8 + 1 + 2 + N_COLS)
 #define RESULT_KB_OFFSET        (3)
 #define RESULT_CONFIG_OFFSET    (RESULT_KB_OFFSET + 8)
 #define RESULT_BACKLIGHT_OFFSET (RESULT_CONFIG_OFFSET + 1)
+#define RESULT_MATRIX_OFFSET    (RESULT_BACKLIGHT_OFFSET + 2)
 
 #define HID_REPORT_KEYS (6)
 
@@ -130,6 +131,7 @@ typedef struct __attribute__((packed))
     uint8_t amp_shutdown : 1; // write 1 to shut the speaker amplifier down (rev 01 and later)
     uint8_t reserved : 5;     // reserved
     uint16_t backlight;      // backlight PWM value
+    uint8_t matrix_state[N_COLS]; // key matrix of the published key report: bit r of byte c = row r of column c pressed
 } addon_data_t;
 
 _Static_assert(sizeof(addon_data_t) == RESULT_BUFFER_SIZE, "raw data and struct size are not aligned!");
@@ -144,7 +146,7 @@ _Static_assert(sizeof(addon_data_t) == RESULT_BUFFER_SIZE, "raw data and struct 
 typedef struct
 {
     volatile uint8_t flag_matrix_scan_done;    // flag to indicate that the button matrix state has changed
-    volatile uint8_t flag_caps_lock;           // caps lock is on (FN + right shift)
+    volatile uint8_t flag_caps_lock;           // the report holds the caps lock key (FN + right shift held)
     volatile uint8_t flag_config_changed;      // flag to indicate that the configuration has changed through I2C
     volatile uint8_t flag_slave_first_write;   // set on every ADDR phase; the next RXNE byte is the register offset
     uint8_t matrix_state[N_COLS];              // current matrix state
@@ -165,12 +167,13 @@ _Static_assert(offsetof(addon_state_t, data.backlight) % 2 == 0, "backlight is n
 static addon_state_t state __attribute__((aligned(4)));
 
 /*
- * Copy of the read-only registers (version, key report), taken at the start of
- * every I2C read. The main loop updates the key report between the bytes of a
- * read: without the copy, a read could return the modifiers of one report and
- * the keys of the next.
+ * Copy of the registers, taken at the start of every I2C read; the read-only
+ * ones (version, key report, key matrix) are sent from it. The main loop
+ * updates the key report and the matrix between the bytes of a read: without
+ * the copy, a read could return the modifiers of one report and the keys of
+ * the next.
  */
-static uint8_t i2c_snapshot[RESULT_CONFIG_OFFSET];
+static uint8_t i2c_snapshot[RESULT_BUFFER_SIZE];
 
 /* initialize timer 3 to periodically generate an interrupt */
 static void TIM3_Init(uint16_t arr, uint16_t psc)
@@ -639,66 +642,180 @@ static void toggle_backlight(void)
     state.data.backlight = (backlight + 20) % 120;
 }
 
+/*
+ * The FN layer: a key pressed while FN is held keeps its FN meaning until it
+ * is released, also when FN goes up first. KEY_NONE: the key only triggers its
+ * function (space toggles the backlight, once per press) and is not reported.
+ */
+static const struct
+{
+    uint8_t key;
+    uint8_t fn_key;
+} fn_layer[] = {
+    {KEY_SPACE, KEY_NONE},       {KEY_BACKSPACE, KEY_DELETE}, {KEY_LEFT, KEY_HOME},
+    {KEY_RIGHT, KEY_END},        {KEY_UP, KEY_PAGEUP},        {KEY_DOWN, KEY_PAGEDOWN},
+};
+#define FN_LAYER_KEYS   (sizeof(fn_layer) / sizeof(fn_layer[0]))
+/* right shift pressed with FN: caps lock while it is held */
+#define FN_LATCH_RSHIFT (1 << FN_LAYER_KEYS)
+
+/* the FN layer keys (bit i: fn_layer[i]) and right shift, pressed with FN and still held */
+static uint8_t fn_latched;
+
+static uint8_t report_has_key(const key_report_t *report, uint8_t key)
+{
+    for (uint8_t j = 0; j < HID_REPORT_KEYS; j++)
+    {
+        if (report->keys[j] == key)
+        {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static void handle_fn(key_report_t *in, key_report_t *out)
 {
-    uint8_t j;
+    uint8_t fn = (in->modifiers & KEY_MOD_RMETA) != 0;
+    uint8_t n = 0;
 
-    /* caps lock is enabled by pressing the FN key and right shift at the same time */
-    if ((in->modifiers & (KEY_MOD_RMETA | KEY_MOD_RSHIFT)) == (KEY_MOD_RMETA | KEY_MOD_RSHIFT))
+    /* latch the layer keys held together with FN, release them when they go up */
+    for (uint8_t i = 0; i < FN_LAYER_KEYS; i++)
+    {
+        if (!report_has_key(in, fn_layer[i].key))
+        {
+            fn_latched &= ~(1 << i);
+        }
+        else if (fn && !(fn_latched & (1 << i)))
+        {
+            fn_latched |= 1 << i;
+            if (fn_layer[i].key == KEY_SPACE)
+            {
+                toggle_backlight();
+            }
+        }
+    }
+    if (!(in->modifiers & KEY_MOD_RSHIFT))
+    {
+        fn_latched &= ~FN_LATCH_RSHIFT;
+    }
+    else if (fn)
+    {
+        fn_latched |= FN_LATCH_RSHIFT;
+    }
+
+    /* caps lock is held while right shift, pressed with FN, is */
+    if ((fn_latched & FN_LATCH_RSHIFT) && !state.flag_caps_lock)
     {
         determine_hid_report(KEY_CAPSLOCK, 0, 1, in);
         state.flag_caps_lock = 1;
     }
-    else
+    else if (!(fn_latched & FN_LATCH_RSHIFT) && state.flag_caps_lock)
     {
-        if (state.flag_caps_lock)
+        determine_hid_report(KEY_CAPSLOCK, 0, 0, in);
+        state.flag_caps_lock = 0;
+    }
+
+    /* the output: latched keys with their FN meaning, without FN itself */
+    out->modifiers = in->modifiers & ~KEY_MOD_RMETA;
+    if (fn_latched & FN_LATCH_RSHIFT)
+    {
+        out->modifiers &= ~KEY_MOD_RSHIFT;
+    }
+    out->reserved = 0;
+    memset(out->keys, 0, sizeof(out->keys));
+    for (uint8_t j = 0; j < HID_REPORT_KEYS; j++)
+    {
+        uint8_t key = in->keys[j];
+
+        for (uint8_t i = 0; i < FN_LAYER_KEYS; i++)
         {
-            determine_hid_report(KEY_CAPSLOCK, 0, 0, in);
-            state.flag_caps_lock = 0;
+            if (key == fn_layer[i].key && (fn_latched & (1 << i)))
+            {
+                key = fn_layer[i].fn_key;
+                break;
+            }
+        }
+        if (key != KEY_NONE)
+        {
+            out->keys[n++] = key;
+        }
+    }
+}
+
+/* is this key one of the FN layer's (space, backspace, the arrows, right shift)? */
+static uint8_t fn_layer_key(uint8_t is_modifier, uint8_t keycode)
+{
+    if (is_modifier == 1)
+    {
+        return keycode == KEY_MOD_RSHIFT;
+    }
+    return is_modifier == 0 && (keycode == KEY_SPACE || keycode == KEY_BACKSPACE ||
+                                keycode == KEY_LEFT || keycode == KEY_RIGHT || keycode == KEY_UP ||
+                                keycode == KEY_DOWN);
+}
+
+/*
+ * The key matrix for I2C readers (the badge's Zephyr driver): without the FN
+ * key, and without the keys of its layer (space, backspace, the arrows, right
+ * shift) pressed while FN is held, until they are released (also when FN goes
+ * up first). Those combinations are this firmware's own (backlight, delete,
+ * home/end, page up/down), not keys to pass on. Caps lock (FN + right shift)
+ * is: the FN key's position carries the caps lock key, set while the report
+ * holds it (the reader toggles its caps lock on the press).
+ */
+static void fn_filter_matrix(const uint8_t *in, uint8_t *out)
+{
+    static uint8_t hidden[N_COLS];
+    uint8_t fn_held = 0;
+    uint8_t keycode;
+    uint8_t is_modifier;
+
+    for (int c = 0; c < N_COLS; c++)
+    {
+        for (int r = 0; r < N_ROWS; r++)
+        {
+            if ((in[c] & (1 << r)) && get_keycode(c, r, &keycode) == 1 && keycode == KEY_MOD_RMETA)
+            {
+                fn_held = 1;
+            }
         }
     }
 
-    /* take a copy of the input report */
-    memcpy(out, in, sizeof(key_report_t));
-
-    /*
-      if the FN key is pressed, modify the output,
-      and trigger special functions
-    */
-    if (out->modifiers & KEY_MOD_RMETA)
+    for (int c = 0; c < N_COLS; c++)
     {
-        /* replace keys and/or trigger special functions */
-        for (j = 0; j < HID_REPORT_KEYS; j++)
+        /* a released key is no longer hidden */
+        hidden[c] &= in[c];
+        out[c] = in[c];
+        for (int r = 0; r < N_ROWS; r++)
         {
-            switch (out->keys[j])
+            if (!(in[c] & (1 << r)))
             {
-                case KEY_SPACE:
-                    toggle_backlight();
-                    memcpy(&out->keys[j], &out->keys[j + 1], (HID_REPORT_KEYS - j - 1));
-                    out->keys[5] = 0;
-                    break;
-                case KEY_BACKSPACE:
-                    out->keys[j] = KEY_DELETE;
-                    break;
-                case KEY_LEFT:
-                    out->keys[j] = KEY_HOME;
-                    break;
-                case KEY_RIGHT:
-                    out->keys[j] = KEY_END;
-                    break;
-                case KEY_UP:
-                    out->keys[j] = KEY_PAGEUP;
-                    break;
-                case KEY_DOWN:
-                    out->keys[j] = KEY_PAGEDOWN;
-                    break;
-                default:
-                    break;
+                continue;
+            }
+            is_modifier = get_keycode(c, r, &keycode);
+            if (is_modifier == 1 && keycode == KEY_MOD_RMETA)
+            {
+                out[c] &= ~(1 << r);
+            }
+            else if (fn_held && fn_layer_key(is_modifier, keycode))
+            {
+                hidden[c] |= 1 << r;
             }
         }
+        out[c] &= ~hidden[c];
+    }
 
-        /* clear the FN key in the reporting */
-        out->modifiers &= (~KEY_MOD_RMETA);
+    /* the FN key's position, never reported, carries the caps lock key: set while the report holds it */
+    for (int c = 0; c < N_COLS; c++)
+    {
+        for (int r = 0; r < N_ROWS; r++)
+        {
+            if (modifiers[c][r] == KEY_MOD_RMETA && state.flag_caps_lock)
+            {
+                out[c] |= 1 << r;
+            }
+        }
     }
 }
 
@@ -809,10 +926,10 @@ static void i2c_slave_process(void)
         /* first byte of a read: take a consistent copy of the read-only registers */
         if (state.slave_position == state.slave_offset)
         {
-            memcpy(i2c_snapshot, state.raw_data, RESULT_CONFIG_OFFSET);
+            memcpy(i2c_snapshot, state.raw_data, RESULT_BUFFER_SIZE);
         }
 
-        if (state.slave_position < RESULT_CONFIG_OFFSET)
+        if (state.slave_position < RESULT_BUFFER_SIZE && !i2c_pos_is_writable(state.slave_position))
         {
             I2C_SendData(I2C1, i2c_snapshot[state.slave_position++]);
         }
@@ -977,9 +1094,18 @@ int main(void)
                 /* handle special FN triggers */
                 handle_fn(&key_report, &report);
 
-                /* publish the report at once: the I2C interrupt must not see half of it */
+                /* the matrix for I2C readers: without FN and its layer */
+                uint8_t published[N_COLS];
+                fn_filter_matrix(previous_matrix_state, published);
+
+                /* only a changed report or matrix goes out on the UART: not FN alone, not FN + space */
+                uint8_t changed = memcmp(&report, &state.data.key_report, sizeof(report)) != 0 ||
+                                  memcmp(published, state.data.matrix_state, N_COLS) != 0;
+
+                /* publish the report and its matrix at once: the I2C interrupt must not see half of it */
                 NVIC_DisableIRQ(I2C1_EV_IRQn);
                 state.data.key_report = report;
+                memcpy(state.data.matrix_state, published, N_COLS);
                 NVIC_EnableIRQ(I2C1_EV_IRQn);
 
                 /*
@@ -987,21 +1113,24 @@ int main(void)
                  * keyboard over I2C can use it as the trigger for its reads.
                  * Debug builds use the UART for their debug output instead.
                  */
+                if (changed)
+                {
 #if (DEBUG)
-                PRINT("Reporting HID through UART:\r\n");
-                for (int i = 0; i < sizeof(key_report_t); i++)
-                {
-                    PRINT("0x%02x ", state.raw_data[RESULT_KB_OFFSET + i]);
-                }
-                PRINT("\r\n");
+                    PRINT("Reporting HID through UART:\r\n");
+                    for (int i = 0; i < sizeof(key_report_t); i++)
+                    {
+                        PRINT("0x%02x ", state.raw_data[RESULT_KB_OFFSET + i]);
+                    }
+                    PRINT("\r\n");
 #else
-                for (int i = 0; i < sizeof(key_report_t); i++)
-                {
-                    while (USART_GetFlagStatus(UART, USART_FLAG_TC) == RESET)
-                        ;
-                    USART_SendData(UART, state.raw_data[RESULT_KB_OFFSET + i]);
-                }
+                    for (int i = 0; i < sizeof(key_report_t); i++)
+                    {
+                        while (USART_GetFlagStatus(UART, USART_FLAG_TC) == RESET)
+                            ;
+                        USART_SendData(UART, state.raw_data[RESULT_KB_OFFSET + i]);
+                    }
 #endif
+                }
 
                 USB_write(&state.raw_data[RESULT_KB_OFFSET], sizeof(key_report_t));
             }
