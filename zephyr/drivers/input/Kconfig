@@ -1,0 +1,22 @@
+# Copyright (c) 2026 Bert Outtier <outtierbert@gmail.com>
+# SPDX-License-Identifier: Apache-2.0
+
+if INPUT
+
+config INPUT_FRI3D_COMMUNICATOR
+	bool "Fri3d Camp 2026 communicator keyboard"
+	default y
+	depends on DT_HAS_FRI3D_COMMUNICATOR_2026_INPUT_ENABLED
+	depends on MFD_FRI3D_COMMUNICATOR
+	help
+	  The keyboard of the Fri3d Camp 2026 communicator add-on as input
+	  events (Zephyr key codes).
+
+config INPUT_FRI3D_COMMUNICATOR_INIT_PRIORITY
+	int "Initialization priority"
+	default INPUT_INIT_PRIORITY
+	depends on INPUT_FRI3D_COMMUNICATOR
+	help
+	  After the communicator's MFD (MFD_FRI3D_COMMUNICATOR_INIT_PRIORITY).
+
+endif # INPUT

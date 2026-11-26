@@ -31,7 +31,8 @@ properties:
     type: phandle
     description: |
       UART that receives the add-on's HID key reports (115200 baud, expansion
-      connector pin 3, badge IO44). Without it there are no key reports.
+      connector pin 3, badge IO44): data there triggers a read of the report
+      over I2C. Without it there are no key reports.
 
   rvswd:
     type: phandle
@@ -39,13 +40,13 @@ properties:
       RVSWD interface (wch,rvswd) on the add-on's I2C pins (the expansion I2C
       bus), to update its firmware (CONFIG_MFD_FRI3D_COMMUNICATOR_UPDATE).
 
-  report-gap-ms:
+  poll-period-ms:
     type: int
-    default: 2
+    default: 10
     description: |
-      A pause of more than this between two UART bytes starts a new key
-      report: the add-on sends a report as one burst (0.7 ms) without
-      framing.
+      Shortest time between two I2C reads of the key report. The add-on
+      sends its report on the UART (8 bytes, 0.7 ms) on every change; the
+      driver reads the report when UART data arrives, at most this often.
 
   boot-timeout-ms:
     type: int
