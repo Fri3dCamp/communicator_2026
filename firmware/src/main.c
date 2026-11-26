@@ -146,7 +146,7 @@ _Static_assert(sizeof(addon_data_t) == RESULT_BUFFER_SIZE, "raw data and struct 
 typedef struct
 {
     volatile uint8_t flag_matrix_scan_done;    // flag to indicate that the button matrix state has changed
-    volatile uint8_t flag_caps_lock;           // caps lock is on (FN + right shift)
+    volatile uint8_t flag_caps_lock;           // the report holds the caps lock key (FN + right shift held)
     volatile uint8_t flag_config_changed;      // flag to indicate that the configuration has changed through I2C
     volatile uint8_t flag_slave_first_write;   // set on every ADDR phase; the next RXNE byte is the register offset
     uint8_t matrix_state[N_COLS];              // current matrix state
@@ -760,7 +760,9 @@ static uint8_t fn_layer_key(uint8_t is_modifier, uint8_t keycode)
  * key, and without the keys of its layer (space, backspace, the arrows, right
  * shift) pressed while FN is held, until they are released (also when FN goes
  * up first). Those combinations are this firmware's own (backlight, delete,
- * home/end, page up/down, caps lock), not keys to pass on.
+ * home/end, page up/down), not keys to pass on. Caps lock (FN + right shift)
+ * is: the FN key's position carries the caps lock key, set while the report
+ * holds it (the reader toggles its caps lock on the press).
  */
 static void fn_filter_matrix(const uint8_t *in, uint8_t *out)
 {
@@ -802,6 +804,18 @@ static void fn_filter_matrix(const uint8_t *in, uint8_t *out)
             }
         }
         out[c] &= ~hidden[c];
+    }
+
+    /* the FN key's position, never reported, carries the caps lock key: set while the report holds it */
+    for (int c = 0; c < N_COLS; c++)
+    {
+        for (int r = 0; r < N_ROWS; r++)
+        {
+            if (modifiers[c][r] == KEY_MOD_RMETA && state.flag_caps_lock)
+            {
+                out[c] |= 1 << r;
+            }
+        }
     }
 }
 
