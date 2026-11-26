@@ -705,6 +705,68 @@ static void handle_fn(key_report_t *in, key_report_t *out)
     }
 }
 
+/* is this key one of the FN layer's (space, backspace, the arrows, right shift)? */
+static uint8_t fn_layer_key(uint8_t is_modifier, uint8_t keycode)
+{
+    if (is_modifier == 1)
+    {
+        return keycode == KEY_MOD_RSHIFT;
+    }
+    return is_modifier == 0 && (keycode == KEY_SPACE || keycode == KEY_BACKSPACE ||
+                                keycode == KEY_LEFT || keycode == KEY_RIGHT || keycode == KEY_UP ||
+                                keycode == KEY_DOWN);
+}
+
+/*
+ * The key matrix for I2C readers (the badge's Zephyr driver): without the FN
+ * key, and without the keys of its layer (space, backspace, the arrows, right
+ * shift) pressed while FN is held, until they are released (also when FN goes
+ * up first). Those combinations are this firmware's own (backlight, delete,
+ * home/end, page up/down, caps lock), not keys to pass on.
+ */
+static void fn_filter_matrix(const uint8_t *in, uint8_t *out)
+{
+    static uint8_t hidden[N_COLS];
+    uint8_t fn_held = 0;
+    uint8_t keycode;
+    uint8_t is_modifier;
+
+    for (int c = 0; c < N_COLS; c++)
+    {
+        for (int r = 0; r < N_ROWS; r++)
+        {
+            if ((in[c] & (1 << r)) && get_keycode(c, r, &keycode) == 1 && keycode == KEY_MOD_RMETA)
+            {
+                fn_held = 1;
+            }
+        }
+    }
+
+    for (int c = 0; c < N_COLS; c++)
+    {
+        /* a released key is no longer hidden */
+        hidden[c] &= in[c];
+        out[c] = in[c];
+        for (int r = 0; r < N_ROWS; r++)
+        {
+            if (!(in[c] & (1 << r)))
+            {
+                continue;
+            }
+            is_modifier = get_keycode(c, r, &keycode);
+            if (is_modifier == 1 && keycode == KEY_MOD_RMETA)
+            {
+                out[c] &= ~(1 << r);
+            }
+            else if (fn_held && fn_layer_key(is_modifier, keycode))
+            {
+                hidden[c] |= 1 << r;
+            }
+        }
+        out[c] &= ~hidden[c];
+    }
+}
+
 /* configure UART1 as output */
 static void USART_Output_Init(uint32_t baudrate)
 {
@@ -980,10 +1042,18 @@ int main(void)
                 /* handle special FN triggers */
                 handle_fn(&key_report, &report);
 
+                /* the matrix for I2C readers: without FN and its layer */
+                uint8_t published[N_COLS];
+                fn_filter_matrix(previous_matrix_state, published);
+
+                /* only a changed report or matrix goes out on the UART: not FN alone, not FN + space */
+                uint8_t changed = memcmp(&report, &state.data.key_report, sizeof(report)) != 0 ||
+                                  memcmp(published, state.data.matrix_state, N_COLS) != 0;
+
                 /* publish the report and its matrix at once: the I2C interrupt must not see half of it */
                 NVIC_DisableIRQ(I2C1_EV_IRQn);
                 state.data.key_report = report;
-                memcpy(state.data.matrix_state, previous_matrix_state, N_COLS);
+                memcpy(state.data.matrix_state, published, N_COLS);
                 NVIC_EnableIRQ(I2C1_EV_IRQn);
 
                 /*
@@ -991,21 +1061,24 @@ int main(void)
                  * keyboard over I2C can use it as the trigger for its reads.
                  * Debug builds use the UART for their debug output instead.
                  */
+                if (changed)
+                {
 #if (DEBUG)
-                PRINT("Reporting HID through UART:\r\n");
-                for (int i = 0; i < sizeof(key_report_t); i++)
-                {
-                    PRINT("0x%02x ", state.raw_data[RESULT_KB_OFFSET + i]);
-                }
-                PRINT("\r\n");
+                    PRINT("Reporting HID through UART:\r\n");
+                    for (int i = 0; i < sizeof(key_report_t); i++)
+                    {
+                        PRINT("0x%02x ", state.raw_data[RESULT_KB_OFFSET + i]);
+                    }
+                    PRINT("\r\n");
 #else
-                for (int i = 0; i < sizeof(key_report_t); i++)
-                {
-                    while (USART_GetFlagStatus(UART, USART_FLAG_TC) == RESET)
-                        ;
-                    USART_SendData(UART, state.raw_data[RESULT_KB_OFFSET + i]);
-                }
+                    for (int i = 0; i < sizeof(key_report_t); i++)
+                    {
+                        while (USART_GetFlagStatus(UART, USART_FLAG_TC) == RESET)
+                            ;
+                        USART_SendData(UART, state.raw_data[RESULT_KB_OFFSET + i]);
+                    }
 #endif
+                }
 
                 USB_write(&state.raw_data[RESULT_KB_OFFSET], sizeof(key_report_t));
             }

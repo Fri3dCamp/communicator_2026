@@ -37,7 +37,7 @@ The Fri3d badge [2024](https://github.com/Fri3dCamp/badge_2024) and [2026](https
 | 0x03 | current HID report packet | R | 8 | An 8-byte HID report packet (see above) |
 | 0x0b | Configuration | R/W | 1 | a 1-byte configuration register (see below) |
 | 0x0c | Backlight | R/W | 2 | Keyboard backlight intensity (0-100) |
-| 0x0e | Key matrix | R | 9 | The key matrix of the current HID report, one byte per column (0-8): bit r is row r (0-7), 1 = pressed. Since v1.1.0; older firmware returns 0 there |
+| 0x0e | Key matrix | R | 9 | The key matrix of the current HID report, one byte per column (0-8): bit r is row r (0-7), 1 = pressed. Without the FN key, and without the keys of its layer (space, backspace, arrows, right shift) pressed while FN is held, until they are released: those combinations are the firmware's own. The UART report goes out only when the report or this matrix changes. Since v1.1.0; older firmware returns 0 there |
 
 The configuration is a 1-byte value with the following encoding:
 
