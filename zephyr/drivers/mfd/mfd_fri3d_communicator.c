@@ -6,9 +6,8 @@
  * CH32X035 keyboard controller of the Fri3d Camp 2026 communicator add-on
  * (communicator_2026 firmware): I2C registers. The add-on sends its 8-byte HID
  * key report on its UART on every change; the driver takes the UART data only
- * as the trigger to read the report over I2C (with firmware v1.1.0 and later
- * also the key matrix), like the DJ add-on, and hands a changed report to its
- * input child. With
+ * as the trigger to read the key matrix over I2C (firmware v1.1.0 and later),
+ * like the DJ add-on, and hands a changed matrix to its input child. With
  * CONFIG_MFD_FRI3D_COMMUNICATOR_UPDATE its firmware can be updated over
  * RVSWD (mfd_fri3d_communicator_update.c); the shell commands are in
  * mfd_fri3d_communicator_shell.c.
@@ -95,8 +94,8 @@ void mfd_fri3d_communicator_get_version(const struct device *dev, uint8_t versio
 	memcpy(version, data->version, sizeof(data->version));
 }
 
-void mfd_fri3d_communicator_set_report_callback(const struct device *dev,
-						mfd_fri3d_communicator_report_cb_t cb,
+void mfd_fri3d_communicator_set_matrix_callback(const struct device *dev,
+						mfd_fri3d_communicator_matrix_cb_t cb,
 						void *user_data)
 {
 	struct mfd_fri3d_communicator_data *data = dev->data;
@@ -151,7 +150,7 @@ int mfd_fri3d_communicator_get_matrix(const struct device *dev,
 	return 0;
 }
 
-/* Read the key report (and the matrix behind it) and hand a changed report on */
+/* Read the key matrix and hand a changed one on */
 static void mfd_fri3d_communicator_work(struct k_work *work)
 {
 	struct k_work_delayable *dwork = k_work_delayable_from_work(work);
@@ -159,14 +158,11 @@ static void mfd_fri3d_communicator_work(struct k_work *work)
 		CONTAINER_OF(dwork, struct mfd_fri3d_communicator_data, work);
 	const struct device *dev = data->dev;
 	const struct mfd_fri3d_communicator_config *config = dev->config;
-	/* report, configuration, backlight and matrix: one read from the report on */
-	uint8_t buf[FRI3D_COMMUNICATOR_REG_MATRIX + FRI3D_COMMUNICATOR_MATRIX_COLS -
-		    FRI3D_COMMUNICATOR_REG_REPORT];
-	bool matrix = mfd_fri3d_communicator_has_matrix(data);
-	mfd_fri3d_communicator_report_cb_t cb;
+	uint8_t matrix[FRI3D_COMMUNICATOR_MATRIX_COLS];
+	mfd_fri3d_communicator_matrix_cb_t cb;
 	int ret;
 
-	if (data->updating) {
+	if (data->updating || !mfd_fri3d_communicator_has_matrix(data)) {
 		/* the update reads again when it is done */
 		return;
 	}
@@ -175,28 +171,23 @@ static void mfd_fri3d_communicator_work(struct k_work *work)
 	atomic_clear(&data->uart_data);
 	data->last_read = k_uptime_get_32();
 
-	ret = mfd_fri3d_communicator_reg_read(dev, FRI3D_COMMUNICATOR_REG_REPORT, buf,
-					      matrix ? sizeof(buf) : FRI3D_COMMUNICATOR_REPORT_SIZE);
+	ret = mfd_fri3d_communicator_reg_read(dev, FRI3D_COMMUNICATOR_REG_MATRIX, matrix,
+					      sizeof(matrix));
 	data->stats.reads++;
 	if (ret != 0) {
 		data->stats.read_errors++;
 		/* the next UART data reads again */
-		LOG_WRN("%s: reading the key report failed: %d", dev->name, ret);
+		LOG_WRN("%s: reading the key matrix failed: %d", dev->name, ret);
 		return;
 	}
 
-	if (matrix) {
-		memcpy(data->matrix, &buf[FRI3D_COMMUNICATOR_REG_MATRIX - FRI3D_COMMUNICATOR_REG_REPORT],
-		       sizeof(data->matrix));
-	}
-
 	cb = data->cb;
-	if (!data->report_valid || memcmp(buf, data->report, sizeof(data->report)) != 0) {
-		data->report_valid = true;
-		memcpy(data->report, buf, sizeof(data->report));
-		data->stats.reports++;
+	if (!data->matrix_valid || memcmp(matrix, data->matrix, sizeof(matrix)) != 0) {
+		data->matrix_valid = true;
+		memcpy(data->matrix, matrix, sizeof(matrix));
+		data->stats.changes++;
 		if (cb != NULL) {
-			cb(dev, data->report, data->user_data);
+			cb(dev, data->matrix, data->user_data);
 		}
 	}
 
@@ -278,7 +269,10 @@ static int mfd_fri3d_communicator_init(const struct device *dev)
 #endif
 	}
 
-	/* the current report, the reference for the changes */
+	if (!mfd_fri3d_communicator_has_matrix(data)) {
+		LOG_WRN("%s: firmware before v1.1.0 has no key matrix register: no keys", dev->name);
+	}
+	/* the current matrix, the reference for the changes */
 	k_work_schedule(&data->work, K_NO_WAIT);
 
 	return 0;

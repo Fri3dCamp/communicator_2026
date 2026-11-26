@@ -68,11 +68,11 @@ static int cmd_communicator_status(const struct shell *sh, size_t argc, char **a
 		shell_print(sh, "configuration 0x%02x: speaker amplifier %s", cfg,
 			    (cfg & FRI3D_COMMUNICATOR_CONFIG_AMP_SHUTDOWN) != 0 ? "shut down" : "on");
 	}
-	shell_print(sh, "UART %u bytes, %u reads (%u failed), %u key reports", st.uart_bytes,
-		    st.reads, st.read_errors, st.reports);
+	shell_print(sh, "UART %u bytes, %u key matrix reads (%u failed, %u changed)", st.uart_bytes,
+		    st.reads, st.read_errors, st.changes);
 
 	if (mfd_fri3d_communicator_get_matrix(shell_communicator, matrix) == 0) {
-		shell_print(sh, "key matrix (a byte per column, a bit per row):");
+		shell_print(sh, "last key matrix (a byte per column, a bit per row):");
 		shell_hexdump_line(sh, 0, matrix, sizeof(matrix));
 	}
 

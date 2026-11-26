@@ -17,7 +17,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/sys/atomic.h>
 
-#include "mfd_fri3d_communicator_report.h"
+#include "mfd_fri3d_communicator_matrix.h"
 
 struct mfd_fri3d_communicator_config {
 	struct i2c_dt_spec i2c;
@@ -33,20 +33,19 @@ struct mfd_fri3d_communicator_config {
 
 struct mfd_fri3d_communicator_data {
 	const struct device *dev;
-	/* reads the key report (and matrix) over I2C */
+	/* reads the key matrix over I2C */
 	struct k_work_delayable work;
-	/* UART data (a report) arrived since the last read */
+	/* UART data (a key report) arrived since the last read */
 	atomic_t uart_data;
 	uint32_t last_read;
 	/* a firmware update is running: the I2C pins are SWD */
 	bool updating;
-	/* the last key report and its matrix */
-	uint8_t report[FRI3D_COMMUNICATOR_REPORT_SIZE];
+	/* the last key matrix read */
 	uint8_t matrix[FRI3D_COMMUNICATOR_MATRIX_COLS];
-	bool report_valid;
+	bool matrix_valid;
 	uint8_t version[3];
 	struct mfd_fri3d_communicator_stats stats;
-	mfd_fri3d_communicator_report_cb_t cb;
+	mfd_fri3d_communicator_matrix_cb_t cb;
 	void *user_data;
 #ifdef CONFIG_MFD_FRI3D_COMMUNICATOR_UPDATE
 	mfd_fri3d_communicator_pre_update_cb_t pre_update;

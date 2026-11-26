@@ -11,7 +11,8 @@
  * The CH32X035 keyboard controller of the communicator, compatible
  * "fri3d,communicator-2026": I2C registers of the communicator_2026 firmware.
  * The add-on sends its HID key report on its UART on every change; the driver
- * takes that as the trigger to read the report (and the key matrix) over I2C.
+ * takes that only as the trigger to read the key matrix over I2C (firmware
+ * v1.1.0 and later).
  * Applications get the keys from the input child (fri3d,communicator-2026-input).
  */
 
@@ -62,12 +63,12 @@ extern "C" {
 struct mfd_fri3d_communicator_stats {
 	/** Bytes received on the UART (each one a trigger to read) */
 	uint32_t uart_bytes;
-	/** I2C reads of the key report */
+	/** I2C reads of the key matrix */
 	uint32_t reads;
 	/** I2C reads that failed */
 	uint32_t read_errors;
-	/** Key reports that changed (handed to the input driver) */
-	uint32_t reports;
+	/** Reads with a changed key matrix (handed to the input driver) */
+	uint32_t changes;
 };
 
 /**
@@ -122,11 +123,10 @@ int mfd_fri3d_communicator_set_backlight(const struct device *dev, uint8_t perce
 void mfd_fri3d_communicator_get_version(const struct device *dev, uint8_t version[3]);
 
 /**
- * @brief Get the key matrix of the current key report.
+ * @brief Get the last key matrix read.
  *
- * Read over I2C with the report (firmware v1.1.0 and later): one byte per
- * column, bit r set while the key in row r is pressed. All zeros before the
- * first report.
+ * Read over I2C on every key change (firmware v1.1.0 and later): one byte per
+ * column, bit r set while the key in row r is pressed.
  *
  * @param dev MFD device.
  * @param matrix Buffer for FRI3D_COMMUNICATOR_MATRIX_COLS bytes.

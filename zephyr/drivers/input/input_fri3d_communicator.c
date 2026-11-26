@@ -5,10 +5,10 @@
  *
  * Keyboard of the Fri3d Camp 2026 communicator add-on as input events, like
  * Zephyr's other keyboard drivers: INPUT_EV_KEY, 1 for a press and 0 for a
- * release, modifiers as keys. The MFD hands over every changed 8-byte HID key
- * report (its internal report callback: modifiers, reserved, 6 key codes);
- * the keys and modifiers that changed since the previous report become key
- * events with Zephyr's codes (the reverse of input_to_hid_code()).
+ * release, modifiers as keys. The MFD hands over every changed key matrix
+ * (9 columns of 8 rows, read over I2C); every key whose state changed becomes
+ * an event with the code of the devicetree keymap (MATRIX_KEY entries). The
+ * events of one matrix read form one group: the sync flag on the last.
  */
 
 #define DT_DRV_COMPAT fri3d_communicator_2026_input
@@ -20,94 +20,110 @@
 #include <zephyr/input/input_hid.h>
 #include <zephyr/logging/log.h>
 
-#include "../mfd/mfd_fri3d_communicator_report.h"
+#include "../mfd/mfd_fri3d_communicator_matrix.h"
 
 LOG_MODULE_REGISTER(input_fri3d_communicator, CONFIG_INPUT_LOG_LEVEL);
 
-/* key codes per HID usage of the keyboard page */
-#define HID_USAGES     256
-/* HID usages 0-3: no key, roll over, POST fail, undefined error */
-#define HID_FIRST_KEY  4
-/* Zephyr key codes that input_to_hid_code() knows lie below this */
-#define INPUT_CODE_END 0x300
+#define ROWS 8
 
-#define REPORT_KEYS    (FRI3D_COMMUNICATOR_REPORT_SIZE - 2)
+/* MATRIX_KEY(row, col, code), <zephyr/dt-bindings/input/keymap.h> */
+#define KEYMAP_ROW(entry)  (((entry) >> 24) & 0xff)
+#define KEYMAP_COL(entry)  (((entry) >> 16) & 0xff)
+#define KEYMAP_CODE(entry) ((entry) & 0xffff)
 
 struct input_fri3d_communicator_config {
 	const struct device *mfd;
+	const uint32_t *keymap;
+	size_t keymap_len;
 };
 
 struct input_fri3d_communicator_data {
-	uint8_t previous[FRI3D_COMMUNICATOR_REPORT_SIZE];
+	uint8_t previous[FRI3D_COMMUNICATOR_MATRIX_COLS];
 };
 
-/* HID usage and modifier bit to Zephyr key code, shared by all instances */
-static uint16_t hid_to_input[HID_USAGES];
-static uint16_t modifier_to_input[8];
-
-static void input_fri3d_communicator_build_tables(void)
+/* Is the key of keymap entry @p entry pressed in @p matrix? */
+static bool key_pressed(const uint8_t *matrix, uint32_t entry)
 {
-	for (uint16_t code = 1; code < INPUT_CODE_END; code++) {
-		int16_t hid = input_to_hid_code(code);
-		uint8_t modifier = input_to_hid_modifier(code);
+	return (matrix[KEYMAP_COL(entry)] & BIT(KEYMAP_ROW(entry))) != 0;
+}
 
-		if (hid >= HID_FIRST_KEY && hid < HID_USAGES && hid_to_input[hid] == 0) {
-			hid_to_input[hid] = code;
-		}
-		if (modifier != 0) {
-			modifier_to_input[find_lsb_set(modifier) - 1] = code;
+/*
+ * Is @p code pressed in @p matrix: one of its switches is (the space bar has
+ * three)?
+ */
+static bool code_pressed(const struct input_fri3d_communicator_config *config,
+			 const uint8_t *matrix, uint16_t code)
+{
+	for (size_t i = 0; i < config->keymap_len; i++) {
+		if (KEYMAP_CODE(config->keymap[i]) == code && key_pressed(matrix, config->keymap[i])) {
+			return true;
 		}
 	}
+
+	return false;
 }
 
-static bool report_has_key(const uint8_t *report, uint8_t usage)
+/*
+ * The codes whose state changed from @p previous to @p matrix, each once. The
+ * order makes chords come out right for event-by-event readers: releases of
+ * other keys, releases of modifiers, presses of modifiers, presses of other
+ * keys (Shift goes down before the A that was pressed with it).
+ */
+static size_t changed_codes(const struct input_fri3d_communicator_config *config,
+			    const uint8_t *previous, const uint8_t *matrix, uint16_t *codes,
+			    uint8_t *values)
 {
-	return memchr(&report[2], usage, REPORT_KEYS) != NULL;
-}
+	size_t count = 0;
 
-/* Report the keys of @p from that are not in @p to, as @p value */
-static void input_fri3d_communicator_keys(const struct device *dev, const uint8_t *from,
-					  const uint8_t *to, int32_t value)
-{
-	for (int i = 2; i < FRI3D_COMMUNICATOR_REPORT_SIZE; i++) {
-		uint8_t usage = from[i];
+	for (int pass = 0; pass < 4; pass++) {
+		bool press = pass >= 2;
+		bool modifiers = pass == 1 || pass == 2;
 
-		if (usage < HID_FIRST_KEY || report_has_key(to, usage)) {
-			continue;
+		for (size_t i = 0; i < config->keymap_len; i++) {
+			uint16_t code = KEYMAP_CODE(config->keymap[i]);
+			bool now = code_pressed(config, matrix, code);
+			bool before = code_pressed(config, previous, code);
+			bool seen = false;
+
+			if (now == before || now != press ||
+			    (input_to_hid_modifier(code) != 0) != modifiers) {
+				continue;
+			}
+			for (size_t j = 0; j < count; j++) {
+				if (codes[j] == code) {
+					seen = true;
+					break;
+				}
+			}
+			if (!seen) {
+				codes[count] = code;
+				values[count] = press ? 1 : 0;
+				count++;
+			}
 		}
-		if (hid_to_input[usage] == 0) {
-			LOG_DBG("%s: HID usage 0x%02x has no key code", dev->name, usage);
-			continue;
-		}
-		input_report_key(dev, hid_to_input[usage], value, true, K_FOREVER);
 	}
+
+	return count;
 }
 
-static void input_fri3d_communicator_report(const struct device *mfd, const uint8_t *report,
+static void input_fri3d_communicator_matrix(const struct device *mfd, const uint8_t *matrix,
 					    void *user_data)
 {
 	const struct device *dev = user_data;
+	const struct input_fri3d_communicator_config *config = dev->config;
 	struct input_fri3d_communicator_data *data = dev->data;
-	uint8_t changed = report[0] ^ data->previous[0];
+	uint16_t codes[FRI3D_COMMUNICATOR_MATRIX_COLS * ROWS];
+	uint8_t values[FRI3D_COMMUNICATOR_MATRIX_COLS * ROWS];
+	size_t count;
 
 	ARG_UNUSED(mfd);
 
-	/* an error report (roll over: too many keys) keeps the previous state */
-	if (report[2] > 0 && report[2] < HID_FIRST_KEY) {
-		return;
+	count = changed_codes(config, data->previous, matrix, codes, values);
+	for (size_t i = 0; i < count; i++) {
+		input_report_key(dev, codes[i], values[i], i == count - 1, K_FOREVER);
 	}
 
-	/* releases first, so a key held through Shift changes comes out right */
-	input_fri3d_communicator_keys(dev, data->previous, report, 0);
-	for (int bit = 0; bit < 8; bit++) {
-		if ((changed & BIT(bit)) != 0 && modifier_to_input[bit] != 0) {
-			input_report_key(dev, modifier_to_input[bit], (report[0] & BIT(bit)) != 0,
-					 true, K_FOREVER);
-		}
-	}
-	input_fri3d_communicator_keys(dev, report, data->previous, 1);
-
-	memcpy(data->previous, report, sizeof(data->previous));
+	memcpy(data->previous, matrix, sizeof(data->previous));
 }
 
 static int input_fri3d_communicator_init(const struct device *dev)
@@ -119,19 +135,27 @@ static int input_fri3d_communicator_init(const struct device *dev)
 		return -ENODEV;
 	}
 
-	if (modifier_to_input[0] == 0) {
-		input_fri3d_communicator_build_tables();
+	for (size_t i = 0; i < config->keymap_len; i++) {
+		if (KEYMAP_ROW(config->keymap[i]) >= ROWS ||
+		    KEYMAP_COL(config->keymap[i]) >= FRI3D_COMMUNICATOR_MATRIX_COLS) {
+			LOG_ERR("%s: keymap entry %zu outside the matrix", dev->name, i);
+			return -EINVAL;
+		}
 	}
 
-	mfd_fri3d_communicator_set_report_callback(config->mfd, input_fri3d_communicator_report,
+	mfd_fri3d_communicator_set_matrix_callback(config->mfd, input_fri3d_communicator_matrix,
 						   (void *)dev);
 
 	return 0;
 }
 
 #define INPUT_FRI3D_COMMUNICATOR_DEFINE(inst)                                                      \
+	static const uint32_t input_fri3d_communicator_keymap##inst[] =                            \
+		DT_INST_PROP(inst, keymap);                                                        \
 	static const struct input_fri3d_communicator_config input_fri3d_communicator_config##inst = { \
 		.mfd = DEVICE_DT_GET(DT_INST_PARENT(inst)),                                        \
+		.keymap = input_fri3d_communicator_keymap##inst,                                   \
+		.keymap_len = ARRAY_SIZE(input_fri3d_communicator_keymap##inst),                   \
 	};                                                                                         \
 	static struct input_fri3d_communicator_data input_fri3d_communicator_data##inst;           \
 	DEVICE_DT_INST_DEFINE(inst, input_fri3d_communicator_init, NULL,                           \

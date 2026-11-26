@@ -3,11 +3,26 @@
 
 description: |
   Keyboard of the Fri3d Camp 2026 communicator add-on as input events: every
-  key and modifier (Shift, Ctrl, Alt, GUI) as INPUT_EV_KEY with Zephyr's key
-  codes (INPUT_KEY_A, INPUT_KEY_LEFTSHIFT, ...), from the HID key reports of
-  the communicator's MFD. A child node of the fri3d,communicator-2026 node,
-  see <fri3d/communicator.dtsi>.
+  key of its key matrix (read over I2C by the communicator's MFD, firmware
+  v1.1.0 and later) as INPUT_EV_KEY with the Zephyr key code of the keymap,
+  1 for a press and 0 for a release. The changes of one matrix read form one
+  group (the sync flag on the last). A child node of the
+  fri3d,communicator-2026 node, see <fri3d/communicator.dtsi>.
+
+  The Fn key is INPUT_KEY_RIGHTMETA, as in the add-on's firmware; its Fn
+  layer (Delete, Home, End, Page Up/Down, Caps Lock) is the application's
+  business here. Keys on more than one switch (the space bar) are reported
+  once.
 
 compatible: "fri3d,communicator-2026-input"
 
 include: base.yaml
+
+properties:
+  keymap:
+    type: array
+    required: true
+    description: |
+      Zephyr key code of every key, using the MATRIX_KEY(row, col, code)
+      macro of <zephyr/dt-bindings/input/keymap.h>: row 0-7 (the bit), column
+      0-8 (the byte of the matrix register).
