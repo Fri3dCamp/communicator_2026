@@ -4,9 +4,11 @@
  * SPDX-License-Identifier: Apache-2.0
  *
  * CH32X035 keyboard controller of the Fri3d Camp 2026 communicator add-on
- * (communicator_2026 firmware): I2C registers, and the 8-byte HID key reports
- * it sends on its UART on every change, as one burst without framing (a pause
- * starts a new report; byte 1 is reserved and 0). With
+ * (communicator_2026 firmware): I2C registers. The add-on sends its 8-byte HID
+ * key report on its UART on every change; the driver takes the UART data only
+ * as the trigger to read the report over I2C (with firmware v1.1.0 and later
+ * also the key matrix), like the DJ add-on, and hands a changed report to its
+ * input child. With
  * CONFIG_MFD_FRI3D_COMMUNICATOR_UPDATE its firmware can be updated over
  * RVSWD (mfd_fri3d_communicator_update.c); the shell commands are in
  * mfd_fri3d_communicator_shell.c.
@@ -128,54 +130,116 @@ int mfd_fri3d_communicator_wait(const struct device *dev, k_timepoint_t timeout)
 	return 0;
 }
 
-static void mfd_fri3d_communicator_report_work(struct k_work *work)
+/* Key matrix register: firmware v1.1.0 and later (debug builds report 255.255.255) */
+static bool mfd_fri3d_communicator_has_matrix(const struct mfd_fri3d_communicator_data *data)
 {
+	static const uint8_t first[3] = {1, 1, 0};
+
+	return memcmp(data->version, first, sizeof(first)) >= 0;
+}
+
+int mfd_fri3d_communicator_get_matrix(const struct device *dev,
+				      uint8_t matrix[FRI3D_COMMUNICATOR_MATRIX_COLS])
+{
+	struct mfd_fri3d_communicator_data *data = dev->data;
+
+	if (!mfd_fri3d_communicator_has_matrix(data)) {
+		return -ENOTSUP;
+	}
+	memcpy(matrix, data->matrix, sizeof(data->matrix));
+
+	return 0;
+}
+
+/* Read the key report (and the matrix behind it) and hand a changed report on */
+static void mfd_fri3d_communicator_work(struct k_work *work)
+{
+	struct k_work_delayable *dwork = k_work_delayable_from_work(work);
 	struct mfd_fri3d_communicator_data *data =
-		CONTAINER_OF(work, struct mfd_fri3d_communicator_data, report_work);
-	uint8_t report[FRI3D_COMMUNICATOR_REPORT_SIZE];
+		CONTAINER_OF(dwork, struct mfd_fri3d_communicator_data, work);
+	const struct device *dev = data->dev;
+	const struct mfd_fri3d_communicator_config *config = dev->config;
+	/* report, configuration, backlight and matrix: one read from the report on */
+	uint8_t buf[FRI3D_COMMUNICATOR_REG_MATRIX + FRI3D_COMMUNICATOR_MATRIX_COLS -
+		    FRI3D_COMMUNICATOR_REG_REPORT];
+	bool matrix = mfd_fri3d_communicator_has_matrix(data);
+	mfd_fri3d_communicator_report_cb_t cb;
+	int ret;
 
-	while (k_msgq_get(&data->reports, report, K_NO_WAIT) == 0) {
-		mfd_fri3d_communicator_report_cb_t cb = data->cb;
+	if (data->updating) {
+		/* the update reads again when it is done */
+		return;
+	}
 
+	/* UART data from here on means a change after this read */
+	atomic_clear(&data->uart_data);
+	data->last_read = k_uptime_get_32();
+
+	ret = mfd_fri3d_communicator_reg_read(dev, FRI3D_COMMUNICATOR_REG_REPORT, buf,
+					      matrix ? sizeof(buf) : FRI3D_COMMUNICATOR_REPORT_SIZE);
+	data->stats.reads++;
+	if (ret != 0) {
+		data->stats.read_errors++;
+		/* the next UART data reads again */
+		LOG_WRN("%s: reading the key report failed: %d", dev->name, ret);
+		return;
+	}
+
+	if (matrix) {
+		memcpy(data->matrix, &buf[FRI3D_COMMUNICATOR_REG_MATRIX - FRI3D_COMMUNICATOR_REG_REPORT],
+		       sizeof(data->matrix));
+	}
+
+	cb = data->cb;
+	if (!data->report_valid || memcmp(buf, data->report, sizeof(data->report)) != 0) {
+		data->report_valid = true;
+		memcpy(data->report, buf, sizeof(data->report));
 		data->stats.reports++;
 		if (cb != NULL) {
-			cb(data->dev, report, data->user_data);
+			cb(dev, data->report, data->user_data);
 		}
+	}
+
+	/* a change while reading: read again */
+	if (atomic_get(&data->uart_data)) {
+		k_work_reschedule(dwork, K_MSEC(config->poll_period_ms));
 	}
 }
 
-/* Key report bytes on the UART: a pause starts a new report */
+/*
+ * The add-on sent its key report on the UART: a key changed. The bytes only
+ * trigger a read of the report over I2C, at most once per poll period.
+ */
 static void mfd_fri3d_communicator_uart_isr(const struct device *uart, void *user_data)
 {
 	const struct device *dev = user_data;
 	const struct mfd_fri3d_communicator_config *config = dev->config;
 	struct mfd_fri3d_communicator_data *data = dev->data;
-	uint8_t c;
+	uint8_t buf[16];
+	bool received = false;
+	uint32_t elapsed;
 
 	uart_irq_update(uart);
-	while (uart_irq_rx_ready(uart) > 0 && uart_fifo_read(uart, &c, 1) == 1) {
-		uint32_t now = k_uptime_get_32();
+	while (uart_irq_rx_ready(uart) > 0) {
+		int len = uart_fifo_read(uart, buf, sizeof(buf));
 
-		data->stats.uart_bytes++;
-		if (data->rx_len > 0 && now - data->rx_last > config->report_gap_ms) {
-			data->rx_len = 0;
+		if (len <= 0) {
+			break;
 		}
-		data->rx_last = now;
-		data->rx[data->rx_len++] = c;
-		if (data->rx_len < FRI3D_COMMUNICATOR_REPORT_SIZE) {
-			continue;
-		}
-		data->rx_len = 0;
-		/* byte 1 is reserved (0): anything else is out of step */
-		if (data->updating || data->rx[1] != 0 ||
-		    k_msgq_put(&data->reports, data->rx, K_NO_WAIT) != 0) {
-			data->stats.dropped++;
-			continue;
-		}
-		k_work_submit(&data->report_work);
+		data->stats.uart_bytes += len;
+		received = true;
 	}
-}
 
+	if (!received || data->updating) {
+		return;
+	}
+
+	atomic_set(&data->uart_data, 1);
+	elapsed = k_uptime_get_32() - data->last_read;
+	k_work_reschedule(&data->work, elapsed >= config->poll_period_ms
+					       ? K_NO_WAIT
+					       : K_MSEC(config->poll_period_ms - elapsed));
+}
 
 static int mfd_fri3d_communicator_init(const struct device *dev)
 {
@@ -184,9 +248,7 @@ static int mfd_fri3d_communicator_init(const struct device *dev)
 	int ret;
 
 	data->dev = dev;
-	k_work_init(&data->report_work, mfd_fri3d_communicator_report_work);
-	k_msgq_init(&data->reports, (char *)data->reports_buf, FRI3D_COMMUNICATOR_REPORT_SIZE,
-		    REPORT_QUEUE_LEN);
+	k_work_init_delayable(&data->work, mfd_fri3d_communicator_work);
 
 	if (!i2c_is_ready_dt(&config->i2c)) {
 		LOG_ERR("%s: I2C bus not ready", dev->name);
@@ -216,6 +278,9 @@ static int mfd_fri3d_communicator_init(const struct device *dev)
 #endif
 	}
 
+	/* the current report, the reference for the changes */
+	k_work_schedule(&data->work, K_NO_WAIT);
+
 	return 0;
 }
 
@@ -224,7 +289,7 @@ static int mfd_fri3d_communicator_init(const struct device *dev)
 		.i2c = I2C_DT_SPEC_INST_GET(inst),                                                 \
 		.uart = COND_CODE_1(DT_INST_NODE_HAS_PROP(inst, uart),                             \
 				    (DEVICE_DT_GET(DT_INST_PHANDLE(inst, uart))), (NULL)),         \
-		.report_gap_ms = DT_INST_PROP(inst, report_gap_ms),                                \
+		.poll_period_ms = DT_INST_PROP(inst, poll_period_ms),                              \
 		.boot_timeout_ms = DT_INST_PROP(inst, boot_timeout_ms),                            \
 		IF_ENABLED(CONFIG_MFD_FRI3D_COMMUNICATOR_UPDATE,                                   \
 			   (.rvswd = COND_CODE_1(DT_INST_NODE_HAS_PROP(inst, rvswd),               \

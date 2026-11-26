@@ -15,15 +15,15 @@
 #include <zephyr/drivers/i2c.h>
 #include <zephyr/drivers/mfd/fri3d_communicator.h>
 #include <zephyr/kernel.h>
+#include <zephyr/sys/atomic.h>
 
-/* key reports waiting for the work queue */
-#define REPORT_QUEUE_LEN 4
+#include "mfd_fri3d_communicator_report.h"
 
 struct mfd_fri3d_communicator_config {
 	struct i2c_dt_spec i2c;
 	/* UART that receives the key reports, or NULL */
 	const struct device *uart;
-	uint32_t report_gap_ms;
+	uint32_t poll_period_ms;
 	uint32_t boot_timeout_ms;
 #ifdef CONFIG_MFD_FRI3D_COMMUNICATOR_UPDATE
 	/* RVSWD interface on the add-on's I2C pins, or NULL */
@@ -33,16 +33,17 @@ struct mfd_fri3d_communicator_config {
 
 struct mfd_fri3d_communicator_data {
 	const struct device *dev;
-	/* delivers the queued key reports */
-	struct k_work report_work;
-	struct k_msgq reports;
-	uint8_t reports_buf[REPORT_QUEUE_LEN * FRI3D_COMMUNICATOR_REPORT_SIZE];
+	/* reads the key report (and matrix) over I2C */
+	struct k_work_delayable work;
+	/* UART data (a report) arrived since the last read */
+	atomic_t uart_data;
+	uint32_t last_read;
 	/* a firmware update is running: the I2C pins are SWD */
 	bool updating;
-	/* UART receive state (interrupt) */
-	uint8_t rx[FRI3D_COMMUNICATOR_REPORT_SIZE];
-	size_t rx_len;
-	uint32_t rx_last;
+	/* the last key report and its matrix */
+	uint8_t report[FRI3D_COMMUNICATOR_REPORT_SIZE];
+	uint8_t matrix[FRI3D_COMMUNICATOR_MATRIX_COLS];
+	bool report_valid;
 	uint8_t version[3];
 	struct mfd_fri3d_communicator_stats stats;
 	mfd_fri3d_communicator_report_cb_t cb;

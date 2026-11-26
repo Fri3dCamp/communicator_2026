@@ -35,6 +35,7 @@ static int cmd_communicator_status(const struct shell *sh, size_t argc, char **a
 {
 	struct mfd_fri3d_communicator_stats st;
 	uint8_t version[3];
+	uint8_t matrix[FRI3D_COMMUNICATOR_MATRIX_COLS];
 	uint8_t cfg;
 	int ret;
 
@@ -67,8 +68,13 @@ static int cmd_communicator_status(const struct shell *sh, size_t argc, char **a
 		shell_print(sh, "configuration 0x%02x: speaker amplifier %s", cfg,
 			    (cfg & FRI3D_COMMUNICATOR_CONFIG_AMP_SHUTDOWN) != 0 ? "shut down" : "on");
 	}
-	shell_print(sh, "UART %u bytes, %u key reports, %u dropped", st.uart_bytes, st.reports,
-		    st.dropped);
+	shell_print(sh, "UART %u bytes, %u reads (%u failed), %u key reports", st.uart_bytes,
+		    st.reads, st.read_errors, st.reports);
+
+	if (mfd_fri3d_communicator_get_matrix(shell_communicator, matrix) == 0) {
+		shell_print(sh, "key matrix (a byte per column, a bit per row):");
+		shell_hexdump_line(sh, 0, matrix, sizeof(matrix));
+	}
 
 	return 0;
 }

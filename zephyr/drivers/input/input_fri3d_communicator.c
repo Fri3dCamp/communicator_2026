@@ -5,8 +5,8 @@
  *
  * Keyboard of the Fri3d Camp 2026 communicator add-on as input events, like
  * Zephyr's other keyboard drivers: INPUT_EV_KEY, 1 for a press and 0 for a
- * release, modifiers as keys. The MFD hands over every 8-byte HID key report
- * (its report callback: modifiers, reserved, 6 key codes);
+ * release, modifiers as keys. The MFD hands over every changed 8-byte HID key
+ * report (its internal report callback: modifiers, reserved, 6 key codes);
  * the keys and modifiers that changed since the previous report become key
  * events with Zephyr's codes (the reverse of input_to_hid_code()).
  */
@@ -19,6 +19,8 @@
 #include <zephyr/input/input.h>
 #include <zephyr/input/input_hid.h>
 #include <zephyr/logging/log.h>
+
+#include "../mfd/mfd_fri3d_communicator_report.h"
 
 LOG_MODULE_REGISTER(input_fri3d_communicator, CONFIG_INPUT_LOG_LEVEL);
 
