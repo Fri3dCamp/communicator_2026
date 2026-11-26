@@ -642,66 +642,104 @@ static void toggle_backlight(void)
     state.data.backlight = (backlight + 20) % 120;
 }
 
+/*
+ * The FN layer: a key pressed while FN is held keeps its FN meaning until it
+ * is released, also when FN goes up first. KEY_NONE: the key only triggers its
+ * function (space toggles the backlight, once per press) and is not reported.
+ */
+static const struct
+{
+    uint8_t key;
+    uint8_t fn_key;
+} fn_layer[] = {
+    {KEY_SPACE, KEY_NONE},       {KEY_BACKSPACE, KEY_DELETE}, {KEY_LEFT, KEY_HOME},
+    {KEY_RIGHT, KEY_END},        {KEY_UP, KEY_PAGEUP},        {KEY_DOWN, KEY_PAGEDOWN},
+};
+#define FN_LAYER_KEYS   (sizeof(fn_layer) / sizeof(fn_layer[0]))
+/* right shift pressed with FN: caps lock while it is held */
+#define FN_LATCH_RSHIFT (1 << FN_LAYER_KEYS)
+
+/* the FN layer keys (bit i: fn_layer[i]) and right shift, pressed with FN and still held */
+static uint8_t fn_latched;
+
+static uint8_t report_has_key(const key_report_t *report, uint8_t key)
+{
+    for (uint8_t j = 0; j < HID_REPORT_KEYS; j++)
+    {
+        if (report->keys[j] == key)
+        {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static void handle_fn(key_report_t *in, key_report_t *out)
 {
-    uint8_t j;
+    uint8_t fn = (in->modifiers & KEY_MOD_RMETA) != 0;
+    uint8_t n = 0;
 
-    /* caps lock is enabled by pressing the FN key and right shift at the same time */
-    if ((in->modifiers & (KEY_MOD_RMETA | KEY_MOD_RSHIFT)) == (KEY_MOD_RMETA | KEY_MOD_RSHIFT))
+    /* latch the layer keys held together with FN, release them when they go up */
+    for (uint8_t i = 0; i < FN_LAYER_KEYS; i++)
+    {
+        if (!report_has_key(in, fn_layer[i].key))
+        {
+            fn_latched &= ~(1 << i);
+        }
+        else if (fn && !(fn_latched & (1 << i)))
+        {
+            fn_latched |= 1 << i;
+            if (fn_layer[i].key == KEY_SPACE)
+            {
+                toggle_backlight();
+            }
+        }
+    }
+    if (!(in->modifiers & KEY_MOD_RSHIFT))
+    {
+        fn_latched &= ~FN_LATCH_RSHIFT;
+    }
+    else if (fn)
+    {
+        fn_latched |= FN_LATCH_RSHIFT;
+    }
+
+    /* caps lock is held while right shift, pressed with FN, is */
+    if ((fn_latched & FN_LATCH_RSHIFT) && !state.flag_caps_lock)
     {
         determine_hid_report(KEY_CAPSLOCK, 0, 1, in);
         state.flag_caps_lock = 1;
     }
-    else
+    else if (!(fn_latched & FN_LATCH_RSHIFT) && state.flag_caps_lock)
     {
-        if (state.flag_caps_lock)
-        {
-            determine_hid_report(KEY_CAPSLOCK, 0, 0, in);
-            state.flag_caps_lock = 0;
-        }
+        determine_hid_report(KEY_CAPSLOCK, 0, 0, in);
+        state.flag_caps_lock = 0;
     }
 
-    /* take a copy of the input report */
-    memcpy(out, in, sizeof(key_report_t));
-
-    /*
-      if the FN key is pressed, modify the output,
-      and trigger special functions
-    */
-    if (out->modifiers & KEY_MOD_RMETA)
+    /* the output: latched keys with their FN meaning, without FN itself */
+    out->modifiers = in->modifiers & ~KEY_MOD_RMETA;
+    if (fn_latched & FN_LATCH_RSHIFT)
     {
-        /* replace keys and/or trigger special functions */
-        for (j = 0; j < HID_REPORT_KEYS; j++)
+        out->modifiers &= ~KEY_MOD_RSHIFT;
+    }
+    out->reserved = 0;
+    memset(out->keys, 0, sizeof(out->keys));
+    for (uint8_t j = 0; j < HID_REPORT_KEYS; j++)
+    {
+        uint8_t key = in->keys[j];
+
+        for (uint8_t i = 0; i < FN_LAYER_KEYS; i++)
         {
-            switch (out->keys[j])
+            if (key == fn_layer[i].key && (fn_latched & (1 << i)))
             {
-                case KEY_SPACE:
-                    toggle_backlight();
-                    memcpy(&out->keys[j], &out->keys[j + 1], (HID_REPORT_KEYS - j - 1));
-                    out->keys[5] = 0;
-                    break;
-                case KEY_BACKSPACE:
-                    out->keys[j] = KEY_DELETE;
-                    break;
-                case KEY_LEFT:
-                    out->keys[j] = KEY_HOME;
-                    break;
-                case KEY_RIGHT:
-                    out->keys[j] = KEY_END;
-                    break;
-                case KEY_UP:
-                    out->keys[j] = KEY_PAGEUP;
-                    break;
-                case KEY_DOWN:
-                    out->keys[j] = KEY_PAGEDOWN;
-                    break;
-                default:
-                    break;
+                key = fn_layer[i].fn_key;
+                break;
             }
         }
-
-        /* clear the FN key in the reporting */
-        out->modifiers &= (~KEY_MOD_RMETA);
+        if (key != KEY_NONE)
+        {
+            out->keys[n++] = key;
+        }
     }
 }
 

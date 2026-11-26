@@ -84,3 +84,6 @@ The ```Fn``` key can be used to trigger special functions:
  * ```Fn+Right```: End
  * ```Fn+Spacebar```: Toggle keyboard backlight
  * ```Fn+Right Shift```: Toggle Caps Lock
+
+A key pressed with ```Fn``` keeps its ```Fn``` function until it is released, also when ```Fn``` is released first.
+```Fn``` alone and ```Fn+Spacebar``` send no report.
